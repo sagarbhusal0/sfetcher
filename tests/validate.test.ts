@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { validateMp4Container } from '../src/media/validate.js';
+import {
+  __emitFFmpegLogForTests,
+  createLogTape,
+} from '../src/media/ffmpeg.js';
 
 /** Minimal big-endian box writer for fixtures. */
 function u32(n: number): Uint8Array {
@@ -144,5 +148,25 @@ describe('validateMp4Container', () => {
   it('rejects a truncated moov', () => {
     const fullFile = minimalMp4();
     expect(() => validateMp4Container(fullFile.slice(0, 60), false)).toThrow(/valid MP4|validation/);
+  });
+});
+
+describe('ffmpeg log tape', () => {
+  it('keeps the last N lines across multicast listeners', () => {
+    const a = createLogTape(3);
+    const b = createLogTape(10);
+    for (const m of ['l1', 'l2', 'l3', 'l4']) __emitFFmpegLogForTests(m);
+    expect(a.tail()).toBe('l2\nl3\nl4');
+    expect(b.tail()).toBe('l1\nl2\nl3\nl4');
+    a.dispose();
+    b.dispose();
+  });
+
+  it('stops collecting after dispose', () => {
+    const tape = createLogTape();
+    __emitFFmpegLogForTests('before');
+    tape.dispose();
+    __emitFFmpegLogForTests('after');
+    expect(tape.tail()).toBe('before');
   });
 });

@@ -3,6 +3,47 @@ import { FFmpeg } from '@ffmpeg/ffmpeg';
 let ffmpeg: FFmpeg | null = null;
 let loading: Promise<FFmpeg> | null = null;
 
+/** Multicast log listeners (singleton FFmpeg is shared across jobs). */
+const logListeners = new Set<(message: string) => void>();
+let logForwarding = false;
+
+/**
+ * Subscribe to FFmpeg stderr/stdout lines. Returns an unsubscribe function.
+ * Safe to call before load; delivery starts once the instance exists.
+ */
+export function onFFmpegLog(listener: (message: string) => void): () => void {
+  logListeners.add(listener);
+  return () => {
+    logListeners.delete(listener);
+  };
+}
+
+/**
+ * Test-only fan-out trigger (the production trigger is the FFmpeg
+ * instance's `log` event after load). Lets unit tests exercise tape
+ * mechanics without booting WASM.
+ */
+export function __emitFFmpegLogForTests(message: string): void {
+  for (const l of [...logListeners]) l(message);
+}
+
+/**
+ * Collect the last `keep` log lines during one mux. Attach inside the mux
+ * lock and read `.tail()` when a step fails — this is what turns a bare
+ * "exit 1" into the actual ffmpeg diagnosis.
+ */
+export function createLogTape(keep = 40): { tail: () => string; dispose: () => void } {
+  const lines: string[] = [];
+  const off = onFFmpegLog((message) => {
+    lines.push(message);
+    if (lines.length > keep) lines.shift();
+  });
+  return {
+    tail: () => lines.slice(-keep).join('\n').slice(-2000),
+    dispose: off,
+  };
+}
+
 /**
  * Load the locally bundled, single-threaded ffmpeg core.
  * Single-threaded on purpose: no SharedArrayBuffer / COOP-COEP requirement,
@@ -20,6 +61,18 @@ export function loadFFmpeg(onLog?: (message: string) => void): Promise<FFmpeg> {
       wasmURL: chrome.runtime.getURL('/ffmpeg/ffmpeg-core.wasm'),
     });
     ffmpeg = ff;
+    if (!logForwarding) {
+      logForwarding = true;
+      ff.on('log', ({ message }) => {
+        for (const l of [...logListeners]) {
+          try {
+            l(message);
+          } catch {
+            // never break the mux on a logging failure
+          }
+        }
+      });
+    }
     return ff;
   })().catch((e) => {
     loading = null;

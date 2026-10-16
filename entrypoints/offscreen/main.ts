@@ -9,7 +9,7 @@
  */
 import { fetchBytes, fetchSegmentsOrdered, sanitizeUrlForError, type SegmentRequest } from '../../src/media/segments';
 import { coerceKeyBytes, decryptAes128, sequenceIv } from '../../src/media/crypto';
-import { loadFFmpeg, packageTracks, remuxToMp4, type RemuxInput } from '../../src/media/ffmpeg';
+import { loadFFmpeg, packageTracks, remuxToMp4, createLogTape, type RemuxInput } from '../../src/media/ffmpeg';
 import {
   MAX_JOB_BYTES,
   planDashJob,
@@ -263,6 +263,10 @@ async function runHls(
     const muxSpan = audio ? 0.35 : 0.25;
     const out = await withMuxLock(async () => {
       if (ac.signal.aborted) throw new Error('Download cancelled');
+      // Tape ffmpeg's own stderr so a mux failure carries the real reason,
+      // not just the exit code.
+      const tape = createLogTape();
+      try {
       const ff = await loadFFmpeg();
       const vTs = muxPlan.videoStrategy === 'concat-demuxer';
       const vInputs: RemuxInput[] = body.map((data, i) => ({
@@ -313,6 +317,15 @@ async function runHls(
         'out.mp4',
         (p) => void setProgress(item, muxBase + muxSpan * 0.7 + p * muxSpan * 0.3),
       );
+      } catch (e) {
+        const tail = tape.tail();
+        if (e instanceof Error && tail) {
+          throw new Error(`${e.message} — ffmpeg: ${tail}`);
+        }
+        throw e;
+      } finally {
+        tape.dispose();
+      }
     });
     if (out.length === 0) throw new Error('Remux produced no output: unsupported stream combination');
     if (out.length > MAX_JOB_BYTES) throw new Error('Output exceeds 500 MB job limit');
@@ -388,6 +401,8 @@ async function runDash(
     // Rebase progress: video 0..0.35, audio 0.35..0.7 (approximate; single bar).
     const packaged = await withMuxLock(async () => {
       if (ac.signal.aborted) throw new Error('Download cancelled');
+      const tape = createLogTape();
+      try {
       const ff = await loadFFmpeg();
       const vFull = await remuxToMp4(ff, vParts, 'concat-protocol', 'v.mp4', (p) =>
         void setProgress(item, 0.7 + p * 0.1),
@@ -408,6 +423,15 @@ async function runDash(
             );
           })()
         : vFull;
+      } catch (e) {
+        const tail = tape.tail();
+        if (e instanceof Error && tail) {
+          throw new Error(`${e.message} — ffmpeg: ${tail}`);
+        }
+        throw e;
+      } finally {
+        tape.dispose();
+      }
     });
     if (packaged.length > MAX_JOB_BYTES) throw new Error('Output exceeds 500 MB job limit');
     validateMp4Container(packaged, aParts.length > 0);
