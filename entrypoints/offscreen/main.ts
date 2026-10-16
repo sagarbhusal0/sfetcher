@@ -7,7 +7,8 @@
  * core, save via the Downloads API. Queue state is written to the same
  * IndexedDB the manager polls, so progress shows up live.
  */
-import { fetchBytes, fetchSegmentsOrdered, type SegmentRequest } from '../../src/media/segments';
+import { fetchBytes, fetchSegmentsOrdered, sanitizeUrlForError, type SegmentRequest } from '../../src/media/segments';
+import { coerceKeyBytes, decryptAes128, sequenceIv } from '../../src/media/crypto';
 import { loadFFmpeg, packageTracks, remuxToMp4, type RemuxInput } from '../../src/media/ffmpeg';
 import {
   MAX_JOB_BYTES,
@@ -111,6 +112,29 @@ function fetchHint(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+/** Decrypt AES-128 segments in place-order; clear segments pass through. */
+async function decryptTrack(
+  segments: HlsMediaPlaylist['segments'],
+  body: Uint8Array[],
+  keyCache: Map<string, Uint8Array>,
+  signal: AbortSignal,
+): Promise<Uint8Array[]> {
+  if (!segments.some((s) => s.key)) return body;
+  return Promise.all(
+    body.map(async (data, i) => {
+      const seg = segments[i];
+      if (!seg?.key) return data;
+      let keyBytes = keyCache.get(seg.key.uri);
+      if (!keyBytes) {
+        const raw = await fetchBytes(seg.key.uri, { signal, resourceType: 'key' });
+        keyBytes = coerceKeyBytes(raw, sanitizeUrlForError(seg.key.uri));
+        keyCache.set(seg.key.uri, keyBytes);
+      }
+      return decryptAes128(data, keyBytes, seg.key.iv ?? sequenceIv(seg.sequence));
+    }),
+  );
+}
+
 async function runHls(
   item: QueueItem,
   manifestUrl: string,
@@ -204,8 +228,10 @@ async function runHls(
     // Video and audio fragment sequences stay isolated per track; progress
     // spans are disjoint so work is never double-counted.
     const fetchSpan = audio ? 0.3 : 0.7;
+    const keyCache = new Map<string, Uint8Array>();
     const { parts, hasInit } = await fetchTrackParts(media.segments, 'video', 0, fetchSpan);
-    const body = hasInit ? parts.slice(1) : parts;
+    let body = hasInit ? parts.slice(1) : parts;
+    body = await decryptTrack(media.segments, body, keyCache, ac.signal);
     const first = body[0];
     if (!first) throw new Error('No segment data received');
     const videoContainer = sniffContainer(first);
@@ -215,7 +241,8 @@ async function runHls(
     let audioContainer: 'ts' | 'fmp4' | 'unknown' | null = null;
     if (audio) {
       const fetched = await fetchTrackParts(audio.segments, 'audio', fetchSpan, 0.3);
-      audioBody = fetched.hasInit ? fetched.parts.slice(1) : fetched.parts;
+      const rawAudioBody = fetched.hasInit ? fetched.parts.slice(1) : fetched.parts;
+      audioBody = await decryptTrack(audio.segments, rawAudioBody, keyCache, ac.signal);
       audioHasInit = fetched.hasInit;
       const audioFirst = audioBody[0];
       if (!audioFirst) throw new Error('No audio segment data received');

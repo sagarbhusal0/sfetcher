@@ -27,6 +27,14 @@ export interface HlsByteRange {
   length: number;
 }
 
+export interface HlsKey {
+  method: 'AES-128';
+  /** Resolved key URI (identity scheme only). */
+  uri: string;
+  /** Explicit IV from the playlist; null means derive from media sequence. */
+  iv: Uint8Array | null;
+}
+
 export interface HlsSegment {
   uri: string;
   duration: number;
@@ -37,6 +45,8 @@ export interface HlsSegment {
   initByteRange: HlsByteRange | null;
   /** Byte range of this media segment, when EXT-X-BYTERANGE precedes it. */
   byteRange: HlsByteRange | null;
+  /** Decryption key applying to this segment; null means clear. */
+  key: HlsKey | null;
 }
 
 export interface HlsMediaPlaylist {
@@ -108,6 +118,25 @@ export function parseByteRangeValue(value: string): { length: number; offset: nu
 }
 
 import { propagateQueryParams } from '../../shared/utils.js';
+
+/**
+ * Parse an EXT-X-KEY IV value (up to 128-bit hex, optional 0x prefix)
+ * into 16 bytes, left-padded with zeros per RFC 8216.
+ */
+export function parseIvHex(value: string): Uint8Array {
+  const hex = value.trim().toLowerCase().startsWith('0x')
+    ? value.trim().slice(2)
+    : value.trim();
+  if (!/^[0-9a-f]*$/.test(hex) || hex.length === 0 || hex.length > 32) {
+    throw new Error(`Invalid EXT-X-KEY IV: ${value}`);
+  }
+  const padded = hex.padStart(32, '0');
+  const out = new Uint8Array(16);
+  for (let i = 0; i < 16; i++) {
+    out[i] = Number.parseInt(padded.slice(i * 2, i * 2 + 2), 16);
+  }
+  return out;
+}
 
 export function resolveUrl(base: string, ref: string, inheritQueryFrom?: string): string {
   try {
@@ -192,6 +221,7 @@ export function parseMediaPlaylist(
   let pendingInit: string | null = null;
   let pendingInitRange: HlsByteRange | null = null;
   let pendingRange: { length: number; offset: number | null } | null = null;
+  let pendingKey: HlsKey | null = null;
   /** Next implicit offset per resolved URI (RFC 8216 4.3.2.2). */
   const nextOffsetByUri = new Map<string, number>();
   let discontinuityNext = false;
@@ -228,8 +258,28 @@ export function parseMediaPlaylist(
       pendingDuration = Number(line.slice(8).split(',')[0]) || 0;
     } else if (line.startsWith('#EXT-X-KEY:')) {
       const attrs = parseAttributes(line);
-      if ((attrs['METHOD'] ?? 'NONE') !== 'NONE') {
-        throw new Error('Encrypted HLS stream (EXT-X-KEY) is not supported');
+      const method = attrs['METHOD'] ?? 'NONE';
+      if (method === 'NONE') {
+        pendingKey = null;
+      } else if (method === 'AES-128') {
+        // Identity keys only: any KEYFORMAT other than the default is a
+        // DRM/key-service scheme and stays unsupported.
+        if (attrs['KEYFORMAT'] !== undefined && attrs['KEYFORMAT'] !== 'identity') {
+          throw new Error(
+            `Encrypted HLS stream uses unsupported key format ${attrs['KEYFORMAT']} (no DRM circumvention attempted)`,
+          );
+        }
+        const keyUri = attrs['URI'];
+        if (!keyUri) throw new Error('AES-128 EXT-X-KEY is missing its key URI');
+        pendingKey = {
+          method: 'AES-128',
+          uri: resolveUrl(baseUrl, keyUri, baseUrl),
+          iv: attrs['IV'] !== undefined ? parseIvHex(attrs['IV']) : null,
+        };
+      } else {
+        throw new Error(
+          `Encrypted HLS stream uses unsupported method ${method} (only AES-128 identity keys are supported; no DRM circumvention attempted)`,
+        );
       }
     } else if (!line.startsWith('#')) {
       if (segments.length >= maxSegments) throw new Error('HLS segment count exceeds limit');
@@ -249,6 +299,7 @@ export function parseMediaPlaylist(
         initSection: pendingInit,
         initByteRange: pendingInitRange,
         byteRange,
+        key: pendingKey,
       });
       pendingDuration = 0;
       discontinuityNext = false;

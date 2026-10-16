@@ -55,13 +55,29 @@ describe('hls', () => {
     ).toThrow();
   });
 
-  it('rejects encrypted streams', () => {
+  it('captures AES-128 identity keys instead of rejecting them', () => {
+    const p = parseMediaPlaylist(
+      '#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI="k.key",IV=0x00000000000000000000000000000001\n#EXTINF:6,\nseg.ts\n#EXT-X-ENDLIST',
+      'https://e.com/a.m3u8',
+    );
+    expect(p.segments[0]?.key?.method).toBe('AES-128');
+    expect(p.segments[0]?.key?.uri).toBe('https://e.com/k.key');
+    expect(p.segments[0]?.key?.iv).toHaveLength(16);
+  });
+
+  it('rejects non-identity and unknown encryption methods explicitly', () => {
     expect(() =>
       parseMediaPlaylist(
-        '#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI="k.key"\n#EXTINF:6,\nseg.ts',
+        '#EXTM3U\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI="k.key"\n#EXTINF:6,\nseg.ts',
         'https://e.com/a.m3u8',
       ),
-    ).toThrow(/Encrypted/);
+    ).toThrow(/SAMPLE-AES/);
+    expect(() =>
+      parseMediaPlaylist(
+        '#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI="k.key",KEYFORMAT="com.apple.streamingkeydelivery"\n#EXTINF:6,\nseg.ts',
+        'https://e.com/a.m3u8',
+      ),
+    ).toThrow(/key format/);
   });
 
   it('picks highest and capped variants', () => {

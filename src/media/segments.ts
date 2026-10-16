@@ -14,6 +14,7 @@ export type ResourceType =
   | 'init'
   | 'video'
   | 'audio'
+  | 'key'
   | 'segment';
 
 const RESOURCE_LABELS: Record<ResourceType, string> = {
@@ -22,6 +23,7 @@ const RESOURCE_LABELS: Record<ResourceType, string> = {
   init: 'initialization segment',
   video: 'video fragment',
   audio: 'audio fragment',
+  key: 'encryption key',
   segment: 'media segment',
 };
 
@@ -37,18 +39,32 @@ export interface ByteRange {
 }
 
 /**
- * Strip query parameters and fragments from a URL for errors, logs, and
- * UI. Signed tokens and credentials must never leave this module.
+ * Strip query parameters, fragments, and userinfo credentials from a URL
+ * for errors, logs, and UI. Signed tokens and credentials must never
+ * leave this module.
  */
 export function sanitizeUrlForError(rawUrl: string): string {
   try {
     const u = new URL(rawUrl);
     u.search = '';
     u.hash = '';
+    u.username = '';
+    u.password = '';
     return u.toString();
   } catch {
     return '(unparseable url)';
   }
+}
+
+/** Human hint distinguishing expiry/auth, missing content, and transient faults. */
+export function describeHttpStatus(status: number): string {
+  if (status === 401 || status === 403) {
+    return 'authorization failed or the signed URL expired (grant access and retry with a fresh page load)';
+  }
+  if (status === 404 || status === 410) return 'content unavailable at this URL';
+  if (status === 429) return 'rate-limited; retry with backoff';
+  if (status >= 500) return 'server error; retry may succeed';
+  return 'request failed';
 }
 
 /** HTTP failure with status, resource kind, and a sanitized URL. */
@@ -58,7 +74,10 @@ export class HttpError extends Error {
   readonly safeUrl: string;
 
   constructor(status: number, resourceType: ResourceType, rawUrl: string) {
-    super(`HTTP ${status} for ${RESOURCE_LABELS[resourceType]} (${sanitizeUrlForError(rawUrl)})`);
+    super(
+      `HTTP ${status} for ${RESOURCE_LABELS[resourceType]} ` +
+        `(${sanitizeUrlForError(rawUrl)}): ${describeHttpStatus(status)}`,
+    );
     this.name = 'HttpError';
     this.status = status;
     this.resourceType = resourceType;
