@@ -146,6 +146,12 @@ export function planDashJob(
   if (manifest.isLive) throw new Error('Live/dynamic DASH streams are not supported in this release');
   const video = pickVideoRep(manifest, variantId);
   const audio = pickAudioRep(manifest);
+  if (video.contentProtection) {
+    throw new Error('DASH content protection (DRM) on the video track is not supported');
+  }
+  if (audio?.contentProtection) {
+    throw new Error('DASH content protection (DRM) on the audio track is not supported');
+  }
   const vBuilt = buildSegmentUrls(video, { count: estimateDashCount(manifest, video, maxSegments) });
   const aBuilt = audio
     ? buildSegmentUrls(audio, { count: estimateDashCount(manifest, audio, maxSegments) })

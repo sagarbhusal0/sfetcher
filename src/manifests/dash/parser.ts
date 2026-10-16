@@ -6,6 +6,8 @@ export interface DashRepresentation {
   codecs: string | null;
   mimeType: string | null;
   baseUrl: string | null;
+  /** True when a ContentProtection descriptor is present (DRM/cenc: unsupported). */
+  contentProtection: boolean;
   segmentTemplate: {
     media: string | null;
     initialization: string | null;
@@ -22,6 +24,7 @@ export interface DashAdaptationSet {
   mimeType: string | null;
   codecs: string | null;
   lang: string | null;
+  contentProtection: boolean;
   representations: DashRepresentation[];
 }
 
@@ -42,12 +45,15 @@ function childText(el: Element, tag: string): string | null {
   return kids[0]?.textContent?.trim() || null;
 }
 
-function resolveDashUrl(base: string, ref: string): string {
+import { propagateQueryParams } from '../../shared/utils.js';
+
+function resolveDashUrl(base: string, ref: string, inheritQueryFrom?: string): string {
   const u = new URL(ref, base);
   if (u.protocol !== 'http:' && u.protocol !== 'https:') {
     throw new Error(`Unsafe URL scheme in MPD: ${u.protocol}`);
   }
-  return u.toString();
+  const resolved = u.toString();
+  return inheritQueryFrom ? propagateQueryParams(inheritQueryFrom, resolved) : resolved;
 }
 
 export function substituteTemplate(
@@ -94,7 +100,7 @@ export function parseMpd(xmlText: string, manifestUrl: string): DashManifest {
   const type = (mpd.getAttribute('type') ?? 'static') as 'static' | 'dynamic';
   const durationSec = parseDurationIso8601(mpd.getAttribute('mediaPresentationDuration'));
   const mpdBase = childText(mpd, 'BaseURL');
-  const baseUrl = mpdBase ? resolveDashUrl(manifestUrl, mpdBase) : manifestUrl;
+  const baseUrl = mpdBase ? resolveDashUrl(manifestUrl, mpdBase, manifestUrl) : manifestUrl;
 
   const periods = childElements(mpd, 'Period');
   const period = periods[0] ?? mpd;
@@ -105,13 +111,14 @@ export function parseMpd(xmlText: string, manifestUrl: string): DashManifest {
     const asetCodecs = aset.getAttribute('codecs');
     const asetLang = aset.getAttribute('lang');
     const asetBase = childText(aset, 'BaseURL');
-    const asetBaseUrl = asetBase ? resolveDashUrl(baseUrl, asetBase) : baseUrl;
+    const asetBaseUrl = asetBase ? resolveDashUrl(baseUrl, asetBase, baseUrl) : baseUrl;
+    const asetProtected = childElements(aset, 'ContentProtection').length > 0;
 
     const reps: DashRepresentation[] = [];
     for (const rep of childElements(aset, 'Representation')) {
       const id = rep.getAttribute('id') ?? '';
       const repBase = childText(rep, 'BaseURL');
-      const repBaseUrl = repBase ? resolveDashUrl(asetBaseUrl, repBase) : null;
+      const repBaseUrl = repBase ? resolveDashUrl(asetBaseUrl, repBase, asetBaseUrl) : null;
 
       const stEl = childElements(rep, 'SegmentTemplate')[0] ?? childElements(aset, 'SegmentTemplate')[0];
       let segmentTemplate: DashRepresentation['segmentTemplate'] = null;
@@ -155,6 +162,7 @@ export function parseMpd(xmlText: string, manifestUrl: string): DashManifest {
         codecs: rep.getAttribute('codecs') ?? asetCodecs,
         mimeType: rep.getAttribute('mimeType') ?? asetMime,
         baseUrl: repBaseUrl ?? asetBaseUrl,
+        contentProtection: asetProtected || childElements(rep, 'ContentProtection').length > 0,
         segmentTemplate,
         segmentList,
         timeline:
@@ -167,6 +175,7 @@ export function parseMpd(xmlText: string, manifestUrl: string): DashManifest {
       mimeType: asetMime,
       codecs: asetCodecs,
       lang: asetLang,
+      contentProtection: asetProtected,
       representations: reps,
     });
   }
@@ -179,7 +188,7 @@ export function buildSegmentUrls(
   opts: { count?: number; startNumber?: number } = {},
 ): { init: string | null; media: string[] } {
   const base = rep.baseUrl ?? '';
-  const join = (ref: string) => resolveDashUrl(base, ref);
+  const join = (ref: string) => resolveDashUrl(base, ref, base);
   if (rep.segmentList) {
     return {
       init: rep.segmentList.initialization ? join(rep.segmentList.initialization) : null,
