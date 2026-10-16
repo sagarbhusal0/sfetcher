@@ -20,11 +20,24 @@ import { parseMaster, parseMediaPlaylist, pickVariant, type HlsMediaPlaylist } f
 import { listVariants } from '../../src/media/variants';
 import { sniffContainer } from '../../src/media/remux';
 import { putQueue, allQueue } from '../../src/storage/db';
+import {
+  createIdbBackend,
+  sweepStaleJobs,
+  type FragmentBackend,
+} from '../../src/storage/fragments';
 import { loadPrefs, transition } from '../../src/storage/prefs';
 import { parseMessage } from '../../src/messaging/schemas';
 import type { QueueItem } from '../../src/shared/types';
 
 const aborters = new Map<string, AbortController>();
+
+/** Write-through fragment bucket (IndexedDB in the real document). */
+const fragmentStore: FragmentBackend = createIdbBackend();
+
+/** Best-effort bucket removal on every terminal path. */
+function discardBucket(queueId: string): void {
+  void fragmentStore.deleteJob(queueId).catch(() => undefined);
+}
 
 /**
  * Serialize FFmpeg MEMFS usage: the singleton cannot serve two jobs at
@@ -52,6 +65,15 @@ async function setProgress(item: QueueItem, progress: number): Promise<void> {
 }
 
 async function finish(item: QueueItem, data: Uint8Array, filename: string): Promise<void> {
+  // Never resurrect a job that moved on (cancelled, or marked failed by a
+  // service-worker restart reconcile) while the mux was running.
+  const latest = await allQueue()
+    .then((all) => all.find((q) => q.id === item.id))
+    .catch(() => undefined);
+  if (latest && latest.status !== 'active' && latest.status !== 'pending') {
+    discardBucket(item.id);
+    return;
+  }
   const blob = new Blob([data.buffer as ArrayBuffer], { type: 'video/mp4' });
   const url = URL.createObjectURL(blob);
   try {
@@ -62,6 +84,7 @@ async function finish(item: QueueItem, data: Uint8Array, filename: string): Prom
       saveAs: false,
     });
     aborters.delete(item.id);
+    discardBucket(item.id);
     await putQueue({
       ...transition(item, 'completed'),
       progress: 1,
@@ -74,6 +97,7 @@ async function finish(item: QueueItem, data: Uint8Array, filename: string): Prom
 
 async function fail(item: QueueItem, e: unknown): Promise<void> {
   aborters.delete(item.id);
+  discardBucket(item.id);
   const active = item.status === 'pending' ? { ...transition(item, 'active'), progress: 0 } : item;
   await putQueue(
     transition(active, 'failed', e instanceof Error ? e.message : String(e)),
@@ -166,6 +190,13 @@ async function runHls(
           concurrency: prefs.concurrency,
           signal: ac.signal,
           onProgress: (done, total) => void setProgress(item, baseProgress + (done / total) * span),
+          // Write-through to the disk bucket (init sections excluded:
+          // small and re-fetchable, not worth bucket slots).
+          onFragment: (idx, data) => {
+            const bodyIdx = initUrl ? idx - 1 : idx;
+            if (bodyIdx < 0) return;
+            return fragmentStore.write(item.id, track, bodyIdx, data);
+          },
         });
         return { parts: fetched, hasInit: initUrl != null };
       })();
@@ -254,6 +285,7 @@ async function runHls(
   } catch (e) {
     if ((e as Error)?.message === 'Download cancelled' || ac.signal.aborted) {
       aborters.delete(item.id);
+      discardBucket(item.id);
       await putQueue(transition(item.status === 'active' ? item : { ...item, status: 'active' as const }, 'cancelled')).catch(() => undefined);
       return;
     }
@@ -288,6 +320,11 @@ async function runDash(item: QueueItem, manifestUrl: string, variantId: string):
         concurrency: prefs.concurrency,
         signal: ac.signal,
         onProgress: (done, total) => void setProgress(item, (done / total) * 0.35),
+        onFragment: (idx, data) => {
+          const bodyIdx = init ? idx - 1 : idx;
+          if (bodyIdx < 0) return;
+          return fragmentStore.write(item.id, trackType, bodyIdx, data);
+        },
       });
       const body = init ? parts.slice(1) : parts;
       const out: RemuxInput[] = body.map((data, i) => ({
@@ -330,6 +367,7 @@ async function runDash(item: QueueItem, manifestUrl: string, variantId: string):
   } catch (e) {
     if ((e as Error)?.message === 'Download cancelled' || ac.signal.aborted) {
       aborters.delete(item.id);
+      discardBucket(item.id);
       await putQueue(transition(item.status === 'active' ? item : { ...item, status: 'active' as const }, 'cancelled')).catch(() => undefined);
       return;
     }
@@ -377,3 +415,15 @@ chrome.runtime.onMessage.addListener((raw, _sender, sendResponse) => {
   }
   return false;
 });
+
+// Remove buckets from jobs that died with a previous document load.
+// Buckets of pending/active jobs are never touched.
+void sweepStaleJobs(
+  fragmentStore,
+  (jobId) =>
+    allQueue()
+      .then((all) =>
+        all.some((q) => q.id === jobId && (q.status === 'active' || q.status === 'pending')),
+      )
+      .catch(() => true),
+).catch(() => undefined);

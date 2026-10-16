@@ -443,7 +443,20 @@ export default defineBackground(() => {
   // Reconcile persisted active downloads after SW restart.
   void (async () => {
     const all = await allQueue().catch(() => []);
-    for (const item of all.filter((q) => q.status === 'active' && q.browserDownloadId != null)) {
+    for (const item of all.filter((q) => q.status === 'active')) {
+      // Stream jobs die with the offscreen document — never leave them
+      // looking active across a restart; their buckets are swept by the
+      // processor (active/pending jobs are spared, so a genuinely live
+      // retry path re-creates state explicitly).
+      if (item.job && item.browserDownloadId == null) {
+        try {
+          await putQueue(transition(item, 'failed', 'Interrupted by extension restart'));
+        } catch {
+          // keep as active; next event will reconcile
+        }
+        continue;
+      }
+      if (item.browserDownloadId == null) continue;
       try {
         const [native] = await chrome.downloads.search({ id: item.browserDownloadId as number });
         if (!native) {

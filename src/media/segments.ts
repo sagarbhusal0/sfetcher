@@ -266,6 +266,8 @@ export async function fetchSegmentsOrdered(
     attempts?: number;
     retryBaseDelayMs?: number;
     resourceType?: ResourceType;
+    /** Write-through hook (e.g. disk bucket); failures propagate and fail the job. */
+    onFragment?: (index: number, data: Uint8Array) => void | Promise<void>;
   } = {},
 ): Promise<Uint8Array[]> {
   const concurrency = Math.max(1, Math.min(opts.concurrency ?? 3, 6));
@@ -289,6 +291,7 @@ export async function fetchSegmentsOrdered(
         retryBaseDelayMs: opts.retryBaseDelayMs,
       });
       results[idx] = bytes;
+      await opts.onFragment?.(idx, bytes);
       done++;
       opts.onProgress?.(done, items.length);
     }
