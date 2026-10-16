@@ -73,6 +73,31 @@ describe('processor initialization', () => {
     expect(arg.url).toBe('chrome-extension://id/offscreen.html');
     expect(arg.reasons).toEqual(['BLOBS']);
   });
+
+  it('falls back to runtime.getContexts when hasDocument is absent', async () => {
+    const createDocument = vi.fn((_opts: unknown): Promise<void> => Promise.resolve());
+    const getContexts = vi.fn((): Promise<Array<{ contextType?: string }>> => Promise.resolve([]));
+    await ensureOffscreen(
+      {
+        offscreen: { createDocument },
+        runtime: { getContexts },
+      },
+      'offscreen.html',
+    );
+    expect(getContexts).toHaveBeenCalledOnce();
+    expect(createDocument).toHaveBeenCalledOnce();
+  });
+
+  it('skips creation when getContexts already shows an offscreen document', async () => {
+    const createDocument = vi.fn((_opts: unknown): Promise<void> => Promise.resolve());
+    await ensureOffscreen({
+      offscreen: { createDocument },
+      runtime: {
+        getContexts: () => Promise.resolve([{ contextType: 'OFFSCREEN_DOCUMENT' }]),
+      },
+    });
+    expect(createDocument).not.toHaveBeenCalled();
+  });
 });
 
 describe('quality discovery without the processor', () => {

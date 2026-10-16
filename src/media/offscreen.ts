@@ -52,9 +52,7 @@ export async function ensureOffscreen(
   docUrl = 'offscreen.html',
 ): Promise<void> {
   const offscreen = chromeNs?.offscreen;
-  // createDocument is the essential method; hasDocument is optional and
-  // absent on some Chromium builds — fall back to runtime.getContexts.
-  if (!offscreen || typeof offscreen.createDocument !== 'function') {
+  if (!offscreen) {
     throw new ProcessorInitError(
       'offscreen-api-missing',
       'Media processor unavailable: this browser does not expose the chrome.offscreen API ' +
@@ -62,6 +60,9 @@ export async function ensureOffscreen(
         'stream remuxing needs a Chromium build with offscreen-document support (Chrome 109+).',
     );
   }
+  // hasDocument is optional and absent on some Chromium builds — when it is
+  // present use it; otherwise fall back to runtime.getContexts. A missing
+  // hasDocument alone is never treated as a missing API.
   if (typeof offscreen.hasDocument === 'function') {
     let has: boolean;
     try {
@@ -84,6 +85,12 @@ export async function ensureOffscreen(
     } catch {
       // ignore; attempt creation below
     }
+  }
+  if (typeof offscreen.createDocument !== 'function') {
+    throw new ProcessorInitError(
+      'offscreen-api-missing',
+      'Media processor unavailable: chrome.offscreen.createDocument is missing (stage offscreen-api-missing).',
+    );
   }
   const url = chromeNs?.runtime?.getURL?.(docUrl) ?? docUrl;
   try {
