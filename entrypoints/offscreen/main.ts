@@ -12,9 +12,11 @@ import { loadFFmpeg, packageTracks, remuxToMp4, type RemuxInput } from '../../sr
 import {
   MAX_JOB_BYTES,
   planDashJob,
+  planHlsMux,
+  resolveHlsAudio,
   segName,
 } from '../../src/media/pipeline';
-import { parseMaster, parseMediaPlaylist, pickVariant } from '../../src/manifests/hls/parser';
+import { parseMaster, parseMediaPlaylist, pickVariant, type HlsMediaPlaylist } from '../../src/manifests/hls/parser';
 import { listVariants } from '../../src/media/variants';
 import { sniffContainer } from '../../src/media/remux';
 import { putQueue, allQueue } from '../../src/storage/db';
@@ -23,6 +25,27 @@ import { parseMessage } from '../../src/messaging/schemas';
 import type { QueueItem } from '../../src/shared/types';
 
 const aborters = new Map<string, AbortController>();
+
+/**
+ * Serialize FFmpeg MEMFS usage: the singleton cannot serve two jobs at
+ * once (shared filenames would interleave). Downloads stay parallel;
+ * only muxing waits its turn. Cancellation is re-checked after acquiring.
+ */
+let muxChain: Promise<void> = Promise.resolve();
+
+async function withMuxLock<T>(fn: () => Promise<T>): Promise<T> {
+  const prev = muxChain;
+  let release!: () => void;
+  muxChain = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await prev;
+  try {
+    return await fn();
+  } finally {
+    release();
+  }
+}
 
 async function setProgress(item: QueueItem, progress: number): Promise<void> {
   await putQueue({ ...item, progress, updatedAt: Date.now() }).catch(() => undefined);
@@ -64,7 +87,12 @@ function fetchHint(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-async function runHls(item: QueueItem, manifestUrl: string, variantId: string): Promise<void> {
+async function runHls(
+  item: QueueItem,
+  manifestUrl: string,
+  variantId: string,
+  audioId?: string | null,
+): Promise<void> {
   const prefs = await loadPrefs();
   const ac = new AbortController();
   aborters.set(item.id, ac);
@@ -79,6 +107,7 @@ async function runHls(item: QueueItem, manifestUrl: string, variantId: string): 
       }),
     );
     let playlistUrl = manifestUrl;
+    let audioPlaylistUrl: string | null = null;
     if (topText.includes('#EXT-X-STREAM-INF')) {
       const master = parseMaster(topText, manifestUrl);
       const variant =
@@ -87,6 +116,7 @@ async function runHls(item: QueueItem, manifestUrl: string, variantId: string): 
           : (master.variants[Number(variantId)] ?? pickVariant(master, 'highest'));
       if (!variant) throw new Error('No HLS variant available');
       playlistUrl = variant.uri;
+      audioPlaylistUrl = resolveHlsAudio(master, variant, audioId ?? null);
     }
     const mediaText = td.decode(
       await fetchBytes(playlistUrl, {
@@ -99,51 +129,126 @@ async function runHls(item: QueueItem, manifestUrl: string, variantId: string): 
     if (media.isLive) throw new Error('Live HLS streams are not supported in this release');
     if (media.segments.length === 0) throw new Error('HLS playlist contains no segments');
 
-    const initUrl = media.segments[0]?.initSection ?? null;
-    const initRange = media.segments[0]?.initByteRange ?? undefined;
-    const all: SegmentRequest[] = [
-      ...(initUrl ? [{ url: initUrl, byteRange: initRange, resourceType: 'init' as const }] : []),
-      ...media.segments.map((s) => ({
-        url: s.uri,
-        byteRange: s.byteRange ?? undefined,
-        resourceType: 'video' as const,
-      })),
-    ];
-    if (all.length > prefs.maxSegments + 1) throw new Error('Segment count exceeds configured limit');
+    // Separate audio playlist, when the variant requires one.
+    let audio: HlsMediaPlaylist | null = null;
+    if (audioPlaylistUrl) {
+      const audioText = td.decode(
+        await fetchBytes(audioPlaylistUrl, {
+          signal: ac.signal,
+          maxBytes: prefs.maxManifestBytes,
+          resourceType: 'audio',
+        }),
+      );
+      audio = parseMediaPlaylist(audioText, audioPlaylistUrl, { maxSegments: prefs.maxSegments });
+      if (audio.isLive) throw new Error('Live HLS streams are not supported in this release');
+      if (audio.segments.length === 0) throw new Error('HLS audio playlist contains no segments');
+    }
 
-    const parts = await fetchSegmentsOrdered(all, {
-      concurrency: prefs.concurrency,
-      signal: ac.signal,
-      onProgress: (done, total) => void setProgress(item, (done / total) * 0.7),
-    });
-    const body = initUrl ? parts.slice(1) : parts;
+    const fetchTrackParts = (
+      segments: HlsMediaPlaylist['segments'],
+      track: 'video' | 'audio',
+      baseProgress: number,
+      span: number,
+    ): Promise<{ parts: Uint8Array[]; hasInit: boolean }> =>
+      (async () => {
+        const initUrl = segments[0]?.initSection ?? null;
+        const initRange = segments[0]?.initByteRange ?? undefined;
+        const all: SegmentRequest[] = [
+          ...(initUrl ? [{ url: initUrl, byteRange: initRange, resourceType: 'init' as const }] : []),
+          ...segments.map((s) => ({
+            url: s.uri,
+            byteRange: s.byteRange ?? undefined,
+            resourceType: track,
+          })),
+        ];
+        if (all.length > prefs.maxSegments + 1) throw new Error('Segment count exceeds configured limit');
+        const fetched = await fetchSegmentsOrdered(all, {
+          concurrency: prefs.concurrency,
+          signal: ac.signal,
+          onProgress: (done, total) => void setProgress(item, baseProgress + (done / total) * span),
+        });
+        return { parts: fetched, hasInit: initUrl != null };
+      })();
+
+    // Video and audio fragment sequences stay isolated per track; progress
+    // spans are disjoint so work is never double-counted.
+    const fetchSpan = audio ? 0.3 : 0.7;
+    const { parts, hasInit } = await fetchTrackParts(media.segments, 'video', 0, fetchSpan);
+    const body = hasInit ? parts.slice(1) : parts;
     const first = body[0];
     if (!first) throw new Error('No segment data received');
-    const container = sniffContainer(first);
-    if (container === 'unknown') {
-      throw new Error('Unrecognized segment container: transcode required (not bundled; see README)');
+    const videoContainer = sniffContainer(first);
+
+    let audioBody: Uint8Array[] = [];
+    let audioHasInit = false;
+    let audioContainer: 'ts' | 'fmp4' | 'unknown' | null = null;
+    if (audio) {
+      const fetched = await fetchTrackParts(audio.segments, 'audio', fetchSpan, 0.3);
+      audioBody = fetched.hasInit ? fetched.parts.slice(1) : fetched.parts;
+      audioHasInit = fetched.hasInit;
+      const audioFirst = audioBody[0];
+      if (!audioFirst) throw new Error('No audio segment data received');
+      audioContainer = sniffContainer(audioFirst);
+      if (audioHasInit && !fetched.parts[0]) throw new Error('No audio initialization data received');
     }
-    const ts = container === 'ts';
-    const inputs: RemuxInput[] = body.map((data, i) => ({
-      name: segName('hls', 'v', i, ts),
-      data,
-    }));
-    const initInputs: RemuxInput[] = [];
-    if (initUrl && parts[0]) {
-      initInputs.push({ name: segName('hls', 'init', 0, false), data: parts[0] });
-    }
-    const ff = await loadFFmpeg();
-    const out = ts
-      ? await remuxToMp4(ff, inputs, 'concat-demuxer', 'out.mp4', (p) =>
-          void setProgress(item, 0.7 + p * 0.25),
-        )
-      : await remuxToMp4(
-          ff,
-          [...initInputs, ...inputs.map((x, i) => ({ ...x, name: segName('hls', 'v', i, false) }))],
-          'concat-protocol',
-          'out.mp4',
-          (p) => void setProgress(item, 0.7 + p * 0.25),
-        );
+
+    const muxPlan = planHlsMux(videoContainer, audioContainer);
+    const muxBase = audio ? 0.6 : 0.7;
+    const muxSpan = audio ? 0.35 : 0.25;
+    const out = await withMuxLock(async () => {
+      if (ac.signal.aborted) throw new Error('Download cancelled');
+      const ff = await loadFFmpeg();
+      const vTs = muxPlan.videoStrategy === 'concat-demuxer';
+      const vInputs: RemuxInput[] = body.map((data, i) => ({
+        name: segName('hls', 'v', i, vTs),
+        data,
+      }));
+      if (!muxPlan.hasSeparateAudio) {
+        const initInputs: RemuxInput[] = [];
+        if (hasInit && parts[0]) {
+          initInputs.push({ name: segName('hls', 'init', 0, false), data: parts[0] });
+        }
+        return vTs
+          ? remuxToMp4(ff, vInputs, 'concat-demuxer', 'out.mp4', (p) =>
+              void setProgress(item, muxBase + p * muxSpan),
+            )
+          : remuxToMp4(
+              ff,
+              [...initInputs, ...vInputs.map((x, i) => ({ ...x, name: segName('hls', 'v', i, false) }))],
+              'concat-protocol',
+              'out.mp4',
+              (p) => void setProgress(item, muxBase + p * muxSpan),
+            );
+      }
+      const aTs = muxPlan.audioStrategy === 'concat-demuxer';
+      const aInputs: RemuxInput[] = audioBody.map((data, i) => ({
+        name: segName('hls', 'a', i, aTs),
+        data,
+      }));
+      const vFull = await remuxToMp4(ff, vInputs, muxPlan.videoStrategy, 'v.mp4', (p) =>
+        void setProgress(item, muxBase + p * muxSpan * 0.4),
+      );
+      if (vFull.length === 0) throw new Error('Video remux produced no output');
+      const aFull = await remuxToMp4(
+        ff,
+        aInputs,
+        muxPlan.audioStrategy as 'concat-demuxer' | 'concat-protocol',
+        'a.m4a',
+        (p) => void setProgress(item, muxBase + muxSpan * 0.4 + p * muxSpan * 0.3),
+        muxPlan.audioNeedsAdtsFix ? ['-bsf:a', 'aac_adtstoasc'] : undefined,
+      );
+      if (aFull.length === 0) throw new Error('Audio remux produced no output');
+      return packageTracks(
+        ff,
+        [
+          { name: 'v_full.mp4', data: vFull },
+          { name: 'a_full.m4a', data: aFull },
+        ],
+        'out.mp4',
+        (p) => void setProgress(item, muxBase + muxSpan * 0.7 + p * muxSpan * 0.3),
+      );
+    });
+    if (out.length === 0) throw new Error('Remux produced no output: unsupported stream combination');
     if (out.length > MAX_JOB_BYTES) throw new Error('Output exceeds 500 MB job limit');
     await finish(item, out, item.filename);
   } catch (e) {
@@ -197,26 +302,29 @@ async function runDash(item: QueueItem, manifestUrl: string, variantId: string):
     if (!first) throw new Error('No video segment data received');
     const aParts = job.audio ? await fetchTrack('a', job.audioInit, job.audioUrls, false, 'audio') : [];
     // Rebase progress: video 0..0.35, audio 0.35..0.7 (approximate; single bar).
-    const ff = await loadFFmpeg();
-    const vFull = await remuxToMp4(ff, vParts, 'concat-protocol', 'v.mp4', (p) =>
-      void setProgress(item, 0.7 + p * 0.1),
-    );
-    const packaged = aParts.length > 0
-      ? await (async () => {
-          const aFull = await remuxToMp4(ff, aParts, 'concat-protocol', 'a.m4a', (p) =>
-            void setProgress(item, 0.8 + p * 0.05),
-          );
-          return packageTracks(
-            ff,
-            [
-              { name: 'v_full.mp4', data: vFull },
-              { name: 'a_full.m4a', data: aFull },
-            ],
-            'out.mp4',
-            (p) => void setProgress(item, 0.85 + p * 0.1),
-          );
-        })()
-      : vFull;
+    const packaged = await withMuxLock(async () => {
+      if (ac.signal.aborted) throw new Error('Download cancelled');
+      const ff = await loadFFmpeg();
+      const vFull = await remuxToMp4(ff, vParts, 'concat-protocol', 'v.mp4', (p) =>
+        void setProgress(item, 0.7 + p * 0.1),
+      );
+      return aParts.length > 0
+        ? await (async () => {
+            const aFull = await remuxToMp4(ff, aParts, 'concat-protocol', 'a.m4a', (p) =>
+              void setProgress(item, 0.8 + p * 0.05),
+            );
+            return packageTracks(
+              ff,
+              [
+                { name: 'v_full.mp4', data: vFull },
+                { name: 'a_full.m4a', data: aFull },
+              ],
+              'out.mp4',
+              (p) => void setProgress(item, 0.85 + p * 0.1),
+            );
+          })()
+        : vFull;
+    });
     if (packaged.length > MAX_JOB_BYTES) throw new Error('Output exceeds 500 MB job limit');
     await finish(item, packaged, item.filename);
   } catch (e) {
@@ -251,11 +359,12 @@ chrome.runtime.onMessage.addListener((raw, _sender, sendResponse) => {
   }
   if (msg.type === 'OFFSCREEN_EXEC') {
     const { queueId, manifestUrl, kind, variantId } = msg.payload;
+    const audioId = msg.payload.audioId ?? null;
     void (async () => {
       const items = await allQueue().catch(() => [] as QueueItem[]);
       const item = items.find((q) => q.id === queueId);
       if (!item) return;
-      if (kind === 'hls') await runHls(item, manifestUrl, variantId);
+      if (kind === 'hls') await runHls(item, manifestUrl, variantId, audioId);
       else await runDash(item, manifestUrl, variantId);
     })();
     sendResponse({ ok: true });

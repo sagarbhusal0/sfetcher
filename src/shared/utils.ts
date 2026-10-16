@@ -78,8 +78,7 @@ export function normalizeMediaUrl(rawUrl: string): string {
   }
 }
 
-export function stableId(input: string): string {
-  let h = 2166136261;
+export function stableId(input: string): string {  let h = 2166136261;
   for (let i = 0; i < input.length; i++) {
     h ^= input.charCodeAt(i);
     h = Math.imul(h, 16777619);
@@ -98,4 +97,37 @@ export function formatBytes(bytes: number | null): string {
     u++;
   }
   return `${v.toFixed(1)} ${units[u]}`;
+}
+
+/**
+ * Narrowly scoped query-parameter propagation for related playlist and
+ * fragment URLs (adapted from upstream hls-downloader's
+ * `appendQueryParams`, MIT (c) 2025 Shy Alter, tightened with a
+ * same-origin boundary).
+ *
+ * Rule: copy source parameters that are absent in the target, same origin
+ * only. Explicitly supplied target parameters always win; cross-origin
+ * targets are returned untouched so tokens never leak to unrelated
+ * origins. Returns the original target string when nothing changes.
+ */
+export function propagateQueryParams(sourceUrl: string, targetUrl: string): string {
+  try {
+    const source = new URL(sourceUrl);
+    const target = new URL(targetUrl);
+    if (source.origin !== target.origin) return targetUrl;
+    if (!source.search || source.search === '?') return targetUrl;
+    const targetParams = new URLSearchParams(target.search);
+    let changed = false;
+    for (const [key, value] of new URLSearchParams(source.search)) {
+      if (!targetParams.has(key)) {
+        targetParams.append(key, value);
+        changed = true;
+      }
+    }
+    if (!changed) return targetUrl;
+    target.search = targetParams.toString();
+    return target.toString();
+  } catch {
+    return targetUrl;
+  }
 }

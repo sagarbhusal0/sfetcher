@@ -287,6 +287,7 @@ export default defineBackground(() => {
                 manifestUrl: item.job.manifestUrl,
                 kind: item.job.kind,
                 variantId: item.job.variantId,
+                audioId: item.job.audioId ?? null,
               },
             });
           } else {
@@ -336,6 +337,7 @@ export default defineBackground(() => {
             manifestUrl: msg.payload.manifestUrl,
             kind: msg.payload.kind,
             variantId: msg.payload.variantId,
+            audioId: msg.payload.audioId ?? null,
           } as const;
           const item = createQueueItem({
             mediaId: msg.payload.mediaId,
@@ -366,6 +368,7 @@ export default defineBackground(() => {
               manifestUrl: job.manifestUrl,
               kind: job.kind,
               variantId: job.variantId,
+              audioId: job.audioId,
             },
           });
           sendResponse({ ok: true, queueId: item.id });

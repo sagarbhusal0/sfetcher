@@ -2,6 +2,7 @@ import {
   parseMaster,
   parseMediaPlaylist,
   pickVariant,
+  type HlsMaster,
   type HlsVariant,
 } from '../manifests/hls/parser.js';
 import {
@@ -167,4 +168,72 @@ export function planDashJob(
 export function segName(kind: 'hls' | 'dash', track: string, i: number, ts: boolean): string {
   const safeTrack = track.replace(/[^a-z0-9]/gi, '').slice(0, 12) || 't';
   return `${kind}_${safeTrack}_${String(Math.max(0, Math.floor(i))).padStart(5, '0')}.${ts ? 'ts' : 'm4s'}`;
+}
+
+/**
+ * Resolve the separate audio playlist for a selected HLS variant.
+ * Returns the audio media-playlist URL, or null when audio is in-band
+ * (no AUDIO group, or the selected rendition has no URI).
+ * Throws when an explicitly selected audio id is not in the master.
+ */
+export function resolveHlsAudio(
+  master: HlsMaster,
+  variant: HlsVariant,
+  audioId: string | null | undefined,
+): string | null {
+  const audios = master.renditions.filter((r) => r.type === 'AUDIO');
+  if (audioId) {
+    const sep = audioId.indexOf('::');
+    const groupId = sep >= 0 ? audioId.slice(0, sep) : audioId;
+    const name = sep >= 0 ? audioId.slice(sep + 2) : '';
+    const found = audios.find((r) => r.groupId === groupId && r.name === name);
+    if (!found) throw new Error('Selected audio track is not available in this playlist');
+    return found.uri;
+  }
+  if (!variant.audioGroup) return null;
+  const group = audios.filter((r) => r.groupId === variant.audioGroup && r.uri != null);
+  if (group.length === 0) return null;
+  return (group.find((r) => r.default) ?? group[0])?.uri ?? null;
+}
+
+export type SniffedContainer = 'ts' | 'fmp4' | 'unknown';
+
+export interface HlsMuxPlan {
+  /** True when a separate audio playlist must be downloaded and packaged. */
+  hasSeparateAudio: boolean;
+  videoStrategy: 'concat-demuxer' | 'concat-protocol';
+  audioStrategy: 'concat-demuxer' | 'concat-protocol' | null;
+  /** TS audio needs ADTS→ASC reframing when moved into MP4. */
+  audioNeedsAdtsFix: boolean;
+}
+
+/**
+ * Choose remux strategies from sniffed input containers (pure, testable).
+ * Throws an actionable error for unknown/unsupported combinations —
+ * callers must never concat-and-rename on this path.
+ */
+export function planHlsMux(
+  videoContainer: SniffedContainer,
+  audioContainer: SniffedContainer | null,
+): HlsMuxPlan {
+  if (videoContainer === 'unknown') {
+    throw new Error('Unrecognized video container: transcode required (not bundled; see README)');
+  }
+  if (audioContainer === 'unknown') {
+    throw new Error('Unrecognized audio container: transcode required (not bundled; see README)');
+  }
+  if (audioContainer === null) {
+    return {
+      hasSeparateAudio: false,
+      videoStrategy: videoContainer === 'ts' ? 'concat-demuxer' : 'concat-protocol',
+      audioStrategy: null,
+      audioNeedsAdtsFix: false,
+    };
+  }
+  return {
+    hasSeparateAudio: true,
+    videoStrategy: videoContainer === 'ts' ? 'concat-demuxer' : 'concat-protocol',
+    audioStrategy: audioContainer === 'ts' ? 'concat-demuxer' : 'concat-protocol',
+    audioNeedsAdtsFix: audioContainer === 'ts',
+  };
 }

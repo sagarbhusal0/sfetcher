@@ -9,6 +9,17 @@ type Filter = MediaFilter;
 interface VariantInfo {
   id: string;
   label: string;
+  bandwidth: number | null;
+  audioGroupId: string | null;
+}
+
+interface AudioRenditionInfo {
+  id: string;
+  groupId: string;
+  name: string;
+  language: string | null;
+  isDefault: boolean;
+  hasPlaylist: boolean;
 }
 
 function MediaRow({
@@ -30,10 +41,40 @@ function MediaRow({
 }) {
   const [expanded, setExpanded] = useState(false);
   const [variants, setVariants] = useState<VariantInfo[] | null>(null);
+  const [audios, setAudios] = useState<AudioRenditionInfo[]>([]);
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState<string>('highest');
+  const [selectedAudio, setSelectedAudio] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const isStream = item.kind === 'hls' || item.kind === 'dash';
+
+  // Audio renditions belonging to the selected variant's group that need a
+  // separate playlist. In-band audio (no group / no URI) needs no selection.
+  // 'highest' resolves backend-side to the top-bandwidth variant; mirror that
+  // here so the audio choice matches what will actually download.
+  const relevantAudios = useMemo(() => {
+    if (!variants || variants.length === 0) return [];
+    const effective =
+      selected === 'highest'
+        ? [...variants]
+            .filter((v) => v.id !== 'highest')
+            .sort((a, b) => (b.bandwidth ?? 0) - (a.bandwidth ?? 0))[0]
+        : variants.find((v) => v.id === selected);
+    const group = effective?.audioGroupId ?? null;
+    if (!group) return [];
+    return audios.filter((a) => a.groupId === group && a.hasPlaylist);
+  }, [variants, audios, selected]);
+
+  useEffect(() => {
+    if (relevantAudios.length === 0) {
+      setSelectedAudio(null);
+      return;
+    }
+    setSelectedAudio((prev) => {
+      if (prev && relevantAudios.some((a) => a.id === prev)) return prev;
+      return (relevantAudios.find((a) => a.isDefault) ?? relevantAudios[0])?.id ?? null;
+    });
+  }, [relevantAudios]);
 
   const loadVariants = async () => {
     if (variants || loading) {
@@ -52,7 +93,8 @@ function MediaRow({
         setNote(res.note ?? 'Live stream: recording is not supported in this release.');
         setVariants([]);
       } else {
-        setVariants([{ id: 'highest', label: 'Highest available' }, ...(res.variants as VariantInfo[])]);
+        setVariants([{ id: 'highest', label: 'Highest available', bandwidth: null, audioGroupId: null }, ...(res.variants as VariantInfo[])]);
+        setAudios((res.audioRenditions ?? []) as AudioRenditionInfo[]);
         if (res.note) setNote(res.note);
       }
     } catch (e) {
@@ -74,6 +116,7 @@ function MediaRow({
           manifestUrl: item.url,
           kind: item.kind,
           variantId: selected,
+          audioId: selectedAudio,
           filename: fallback,
         },
       });
@@ -146,6 +189,22 @@ function MediaRow({
                   </label>
                 ))}
               </div>
+              {relevantAudios.length > 0 && (
+                <div className="space-y-1 border-t border-zinc-800 pt-2">
+                  <p className="text-[11px] text-zinc-500">Audio track</p>
+                  {relevantAudios.map((a) => (
+                    <label key={a.id} className="flex items-center gap-2 text-xs text-zinc-300">
+                      <input
+                        type="radio"
+                        name={`a-${item.id}`}
+                        checked={selectedAudio === a.id}
+                        onChange={() => setSelectedAudio(a.id)}
+                      />
+                      {a.language ? `${a.language} — ` : ''}{a.name}
+                    </label>
+                  ))}
+                </div>
+              )}
               <button
                 onClick={() => void startStream()}
                 disabled={busy}

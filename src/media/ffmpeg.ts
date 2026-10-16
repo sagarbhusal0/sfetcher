@@ -45,6 +45,7 @@ export async function remuxToMp4(
   strategy: 'concat-demuxer' | 'concat-protocol',
   outputName: string,
   onProgress?: (ratio: number) => void,
+  extraOutputArgs?: string[],
 ): Promise<Uint8Array> {
   if (inputs.length === 0) throw new Error('No segments to remux');
   const off = onProgress ? ff.on('progress', ({ progress }) => onProgress(progress)) : null;
@@ -57,10 +58,10 @@ export async function remuxToMp4(
       // MPEG-TS segments: concat demuxer handles timestamps correctly.
       const list = inputs.map((i) => `file '${i.name}'`).join('\n');
       await ff.writeFile('list.txt', new TextEncoder().encode(list));
-      args = ['-f', 'concat', '-safe', '0', '-i', 'list.txt', '-c', 'copy', outputName];
+      args = ['-f', 'concat', '-safe', '0', '-i', 'list.txt', '-c', 'copy', ...(extraOutputArgs ?? []), outputName];
     } else {
       // Fragmented MP4 (init segment first): byte-level concat protocol.
-      args = ['-i', `concat:${inputs.map((i) => i.name).join('|')}`, '-c', 'copy', outputName];
+      args = ['-i', `concat:${inputs.map((i) => i.name).join('|')}`, '-c', 'copy', ...(extraOutputArgs ?? []), outputName];
     }
     const code = await ff.exec(args);
     if (code !== 0) {

@@ -16,6 +16,8 @@ export interface HlsRendition {
   language: string | null;
   uri: string | null;
   default: boolean;
+  autoselect: boolean;
+  channels: string | null;
 }
 
 export interface HlsByteRange {
@@ -105,13 +107,16 @@ export function parseByteRangeValue(value: string): { length: number; offset: nu
   return { length, offset };
 }
 
-export function resolveUrl(base: string, ref: string): string {
+import { propagateQueryParams } from '../../shared/utils.js';
+
+export function resolveUrl(base: string, ref: string, inheritQueryFrom?: string): string {
   try {
     const u = new URL(ref, base);
     if (u.protocol !== 'http:' && u.protocol !== 'https:') {
       throw new Error(`Unsafe URL scheme in playlist: ${u.protocol}`);
     }
-    return u.toString();
+    const resolved = u.toString();
+    return inheritQueryFrom ? propagateQueryParams(inheritQueryFrom, resolved) : resolved;
   } catch (e) {
     if (e instanceof Error && e.message.startsWith('Unsafe URL scheme')) throw e;
     throw new Error(`Unresolvable playlist URL: ${ref}`);
@@ -138,7 +143,7 @@ export function parseMaster(text: string, baseUrl: string): HlsMaster {
       if (!uriLine || uriLine.startsWith('#')) throw new Error('Master playlist variant missing URI');
       const { w, h } = parseResolution(attrs['RESOLUTION']);
       variants.push({
-        uri: resolveUrl(baseUrl, uriLine),
+        uri: resolveUrl(baseUrl, uriLine, baseUrl),
         bandwidth: attrs['BANDWIDTH'] ? Number(attrs['BANDWIDTH']) : null,
         resolution: attrs['RESOLUTION'] ?? null,
         width: w,
@@ -156,8 +161,10 @@ export function parseMaster(text: string, baseUrl: string): HlsMaster {
           type: t,
           name: attrs['NAME'] ?? '',
           language: attrs['LANGUAGE'] ?? null,
-          uri: attrs['URI'] ? resolveUrl(baseUrl, attrs['URI']) : null,
+          uri: attrs['URI'] ? resolveUrl(baseUrl, attrs['URI'], baseUrl) : null,
           default: (attrs['DEFAULT'] ?? 'NO') === 'YES',
+          autoselect: (attrs['AUTOSELECT'] ?? 'NO') === 'YES',
+          channels: attrs['CHANNELS'] ?? null,
         });
       }
     }
@@ -204,7 +211,7 @@ export function parseMediaPlaylist(
       discontinuityNext = true;
     } else if (line.startsWith('#EXT-X-MAP:')) {
       const attrs = parseAttributes(line);
-      pendingInit = attrs['URI'] ? resolveUrl(baseUrl, attrs['URI']) : null;
+      pendingInit = attrs['URI'] ? resolveUrl(baseUrl, attrs['URI'], baseUrl) : null;
       // EXT-X-MAP may carry its own BYTERANGE for the init section.
       if (attrs['BYTERANGE'] !== undefined) {
         const { length, offset } = parseByteRangeValue(attrs['BYTERANGE']);
@@ -226,7 +233,7 @@ export function parseMediaPlaylist(
       }
     } else if (!line.startsWith('#')) {
       if (segments.length >= maxSegments) throw new Error('HLS segment count exceeds limit');
-      const uri = resolveUrl(baseUrl, line);
+      const uri = resolveUrl(baseUrl, line, baseUrl);
       let byteRange: HlsByteRange | null = null;
       if (pendingRange) {
         const offset = pendingRange.offset ?? nextOffsetByUri.get(uri) ?? 0;

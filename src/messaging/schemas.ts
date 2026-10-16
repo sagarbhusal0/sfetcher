@@ -102,6 +102,7 @@ export const messageSchema = z.discriminatedUnion('type', [
       manifestUrl: z.string().url().max(8192),
       kind: z.enum(['hls', 'dash']),
       variantId: z.string().min(1).max(64),
+      audioId: z.string().min(1).max(256).nullish(),
       filename: z.string().min(1).max(255),
     }),
   }),
@@ -119,6 +120,7 @@ export const messageSchema = z.discriminatedUnion('type', [
       manifestUrl: z.string().url().max(8192),
       kind: z.enum(['hls', 'dash']),
       variantId: z.string().min(1).max(64),
+      audioId: z.string().min(1).max(256).nullish(),
     }),
   }),
   z.object({

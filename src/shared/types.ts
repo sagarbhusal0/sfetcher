@@ -39,6 +39,8 @@ export interface StreamJobSpec {
   manifestUrl: string;
   kind: 'hls' | 'dash';
   variantId: string;
+  /** Selected separate audio rendition (`groupId::name`); null = in-band/default. */
+  audioId: string | null;
 }
 
 export interface QueueItem {
