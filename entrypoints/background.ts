@@ -308,7 +308,7 @@ export default defineBackground(() => {
           // and is initialized lazily on actual download.
           const prefs = await loadPrefs();
           const listing = await listVariants(msg.payload.manifestUrl, msg.payload.kind, (url) =>
-            fetchBytes(url, { maxBytes: prefs.maxManifestBytes }).then((b) =>
+            fetchBytes(url, { maxBytes: prefs.maxManifestBytes, resourceType: 'master' }).then((b) =>
               new TextDecoder().decode(b),
             ),
           );

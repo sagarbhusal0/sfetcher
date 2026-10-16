@@ -18,12 +18,23 @@ export interface HlsRendition {
   default: boolean;
 }
 
+export interface HlsByteRange {
+  /** First byte offset (inclusive). */
+  offset: number;
+  /** Number of bytes. */
+  length: number;
+}
+
 export interface HlsSegment {
   uri: string;
   duration: number;
   sequence: number;
   discontinuity: boolean;
   initSection: string | null;
+  /** Byte range of the initialization segment, when EXT-X-MAP carries BYTERANGE. */
+  initByteRange: HlsByteRange | null;
+  /** Byte range of this media segment, when EXT-X-BYTERANGE precedes it. */
+  byteRange: HlsByteRange | null;
 }
 
 export interface HlsMediaPlaylist {
@@ -73,6 +84,25 @@ function parseResolution(s: string | undefined): { w: number | null; h: number |
   const m = /^(\d+)x(\d+)$/.exec(s);
   if (!m) return { w: null, h: null };
   return { w: Number(m[1]), h: Number(m[2]) };
+}
+
+/**
+ * Parse an EXT-X-BYTERANGE value (`n[@o]`) into a structured range.
+ * A missing offset is resolved by the caller against the previous
+ * applicable range, per RFC 8216 section 4.3.2.2.
+ */
+export function parseByteRangeValue(value: string): { length: number; offset: number | null } {
+  const m = /^(\d+)@(\d+)$/.exec(value.trim()) ?? /^(\d+)$/.exec(value.trim());
+  if (!m) throw new Error(`Invalid EXT-X-BYTERANGE value: ${value}`);
+  const length = Number(m[1]);
+  const offset = m[2] !== undefined ? Number(m[2]) : null;
+  if (!Number.isSafeInteger(length) || length <= 0) {
+    throw new Error(`Invalid EXT-X-BYTERANGE length: ${value}`);
+  }
+  if (offset !== null && (!Number.isSafeInteger(offset) || offset < 0)) {
+    throw new Error(`Invalid EXT-X-BYTERANGE offset: ${value}`);
+  }
+  return { length, offset };
 }
 
 export function resolveUrl(base: string, ref: string): string {
@@ -153,6 +183,10 @@ export function parseMediaPlaylist(
   let mediaSequence = 0;
   let pendingDuration = 0;
   let pendingInit: string | null = null;
+  let pendingInitRange: HlsByteRange | null = null;
+  let pendingRange: { length: number; offset: number | null } | null = null;
+  /** Next implicit offset per resolved URI (RFC 8216 4.3.2.2). */
+  const nextOffsetByUri = new Map<string, number>();
   let discontinuityNext = false;
 
   for (const raw of lines) {
@@ -171,6 +205,18 @@ export function parseMediaPlaylist(
     } else if (line.startsWith('#EXT-X-MAP:')) {
       const attrs = parseAttributes(line);
       pendingInit = attrs['URI'] ? resolveUrl(baseUrl, attrs['URI']) : null;
+      // EXT-X-MAP may carry its own BYTERANGE for the init section.
+      if (attrs['BYTERANGE'] !== undefined) {
+        const { length, offset } = parseByteRangeValue(attrs['BYTERANGE']);
+        const mapUri = pendingInit ?? baseUrl;
+        const resolved = offset ?? nextOffsetByUri.get(mapUri) ?? 0;
+        pendingInitRange = { offset: resolved, length };
+        nextOffsetByUri.set(mapUri, resolved + length);
+      } else {
+        pendingInitRange = null;
+      }
+    } else if (line.startsWith('#EXT-X-BYTERANGE:')) {
+      pendingRange = parseByteRangeValue(line.slice('#EXT-X-BYTERANGE:'.length));
     } else if (line.startsWith('#EXTINF:')) {
       pendingDuration = Number(line.slice(8).split(',')[0]) || 0;
     } else if (line.startsWith('#EXT-X-KEY:')) {
@@ -180,12 +226,22 @@ export function parseMediaPlaylist(
       }
     } else if (!line.startsWith('#')) {
       if (segments.length >= maxSegments) throw new Error('HLS segment count exceeds limit');
+      const uri = resolveUrl(baseUrl, line);
+      let byteRange: HlsByteRange | null = null;
+      if (pendingRange) {
+        const offset = pendingRange.offset ?? nextOffsetByUri.get(uri) ?? 0;
+        byteRange = { offset, length: pendingRange.length };
+        nextOffsetByUri.set(uri, offset + pendingRange.length);
+        pendingRange = null;
+      }
       segments.push({
-        uri: resolveUrl(baseUrl, line),
+        uri,
         duration: pendingDuration,
         sequence: mediaSequence + segments.length,
         discontinuity: discontinuityNext,
         initSection: pendingInit,
+        initByteRange: pendingInitRange,
+        byteRange,
       });
       pendingDuration = 0;
       discontinuityNext = false;

@@ -7,7 +7,7 @@
  * core, save via the Downloads API. Queue state is written to the same
  * IndexedDB the manager polls, so progress shows up live.
  */
-import { fetchBytes, fetchSegmentsOrdered } from '../../src/media/segments';
+import { fetchBytes, fetchSegmentsOrdered, type SegmentRequest } from '../../src/media/segments';
 import { loadFFmpeg, packageTracks, remuxToMp4, type RemuxInput } from '../../src/media/ffmpeg';
 import {
   MAX_JOB_BYTES,
@@ -72,7 +72,11 @@ async function runHls(item: QueueItem, manifestUrl: string, variantId: string): 
     await putQueue(transition(item, 'active'));
     const td = new TextDecoder();
     const topText = td.decode(
-      await fetchBytes(manifestUrl, { signal: ac.signal, maxBytes: prefs.maxManifestBytes }),
+      await fetchBytes(manifestUrl, {
+        signal: ac.signal,
+        maxBytes: prefs.maxManifestBytes,
+        resourceType: 'master',
+      }),
     );
     let playlistUrl = manifestUrl;
     if (topText.includes('#EXT-X-STREAM-INF')) {
@@ -85,15 +89,26 @@ async function runHls(item: QueueItem, manifestUrl: string, variantId: string): 
       playlistUrl = variant.uri;
     }
     const mediaText = td.decode(
-      await fetchBytes(playlistUrl, { signal: ac.signal, maxBytes: prefs.maxManifestBytes }),
+      await fetchBytes(playlistUrl, {
+        signal: ac.signal,
+        maxBytes: prefs.maxManifestBytes,
+        resourceType: 'variant',
+      }),
     );
     const media = parseMediaPlaylist(mediaText, playlistUrl, { maxSegments: prefs.maxSegments });
     if (media.isLive) throw new Error('Live HLS streams are not supported in this release');
     if (media.segments.length === 0) throw new Error('HLS playlist contains no segments');
 
-    const urls = media.segments.map((s) => s.uri);
     const initUrl = media.segments[0]?.initSection ?? null;
-    const all = initUrl ? [initUrl, ...urls] : urls;
+    const initRange = media.segments[0]?.initByteRange ?? undefined;
+    const all: SegmentRequest[] = [
+      ...(initUrl ? [{ url: initUrl, byteRange: initRange, resourceType: 'init' as const }] : []),
+      ...media.segments.map((s) => ({
+        url: s.uri,
+        byteRange: s.byteRange ?? undefined,
+        resourceType: 'video' as const,
+      })),
+    ];
     if (all.length > prefs.maxSegments + 1) throw new Error('Segment count exceeds configured limit');
 
     const parts = await fetchSegmentsOrdered(all, {
@@ -158,8 +173,12 @@ async function runDash(item: QueueItem, manifestUrl: string, variantId: string):
       init: string | null,
       urls: string[],
       extTs: boolean,
+      trackType: 'video' | 'audio',
     ): Promise<RemuxInput[]> => {
-      const all = init ? [init, ...urls] : urls;
+      const all: SegmentRequest[] = [
+        ...(init ? [{ url: init, resourceType: 'init' as const }] : []),
+        ...urls.map((url) => ({ url, resourceType: trackType })),
+      ];
       const parts = await fetchSegmentsOrdered(all, {
         concurrency: prefs.concurrency,
         signal: ac.signal,
@@ -173,10 +192,10 @@ async function runDash(item: QueueItem, manifestUrl: string, variantId: string):
       if (init && parts[0]) out.unshift({ name: segName('dash', `${name}init`, 0, extTs), data: parts[0] });
       return out;
     };
-    const vParts = await fetchTrack('v', job.videoInit, job.videoUrls, false);
+    const vParts = await fetchTrack('v', job.videoInit, job.videoUrls, false, 'video');
     const first = vParts[vParts.length - 1] ?? vParts[0];
     if (!first) throw new Error('No video segment data received');
-    const aParts = job.audio ? await fetchTrack('a', job.audioInit, job.audioUrls, false) : [];
+    const aParts = job.audio ? await fetchTrack('a', job.audioInit, job.audioUrls, false, 'audio') : [];
     // Rebase progress: video 0..0.35, audio 0.35..0.7 (approximate; single bar).
     const ff = await loadFFmpeg();
     const vFull = await remuxToMp4(ff, vParts, 'concat-protocol', 'v.mp4', (p) =>
@@ -213,7 +232,7 @@ async function runDash(item: QueueItem, manifestUrl: string, variantId: string):
 async function describeVariants(manifestUrl: string, kind: 'hls' | 'dash') {
   const prefs = await loadPrefs();
   return listVariants(manifestUrl, kind, (url) =>
-    fetchBytes(url, { maxBytes: prefs.maxManifestBytes }).then((b) => new TextDecoder().decode(b)),
+    fetchBytes(url, { maxBytes: prefs.maxManifestBytes, resourceType: 'master' }).then((b) => new TextDecoder().decode(b)),
   );
 }
 
