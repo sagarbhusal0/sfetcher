@@ -21,6 +21,7 @@ import { parseMaster, parseMediaPlaylist, pickVariant, type HlsMediaPlaylist } f
 import { listVariants } from '../../src/media/variants';
 import { sniffContainer } from '../../src/media/remux';
 import { putQueue, allQueue } from '../../src/storage/db';
+import { validateMp4Container } from '../../src/media/validate';
 import {
   createIdbBackend,
   sweepStaleJobs,
@@ -308,6 +309,7 @@ async function runHls(
     });
     if (out.length === 0) throw new Error('Remux produced no output: unsupported stream combination');
     if (out.length > MAX_JOB_BYTES) throw new Error('Output exceeds 500 MB job limit');
+    validateMp4Container(out, audio != null);
     await finish(item, out, item.filename);
   } catch (e) {
     if ((e as Error)?.message === 'Download cancelled' || ac.signal.aborted) {
@@ -390,6 +392,7 @@ async function runDash(item: QueueItem, manifestUrl: string, variantId: string):
         : vFull;
     });
     if (packaged.length > MAX_JOB_BYTES) throw new Error('Output exceeds 500 MB job limit');
+    validateMp4Container(packaged, aParts.length > 0);
     await finish(item, packaged, item.filename);
   } catch (e) {
     if ((e as Error)?.message === 'Download cancelled' || ac.signal.aborted) {
