@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Sfetcher test: DASH VOD</title>
+<script src="https://cdn.jsdelivr.net/npm/dashjs@4/dist/dash.all.min.js"></script>
+</head>
+<body>
+<h1>DASH VOD (blob-backed video element)</h1>
+<video id="v" controls width="640"></video>
+<script>
+  // Public Big Buck Bunny DASH asset (Akamai). Authorized test content.
+  const src = 'https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps.mpd';
+  const player = dashjs.MediaPlayer().create();
+  player.initialize(document.getElementById('v'), src, false);
+</script>
+<p>Expected: popup lists the dash manifest; Qualities shows representations.</p>
+</body>
+</html>

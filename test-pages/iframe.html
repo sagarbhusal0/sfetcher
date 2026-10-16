@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Sfetcher test: cross-origin-style iframe</title>
+</head>
+<body>
+<h1>Embedded player (iframe)</h1>
+<!-- Same-directory embed stands in for a cross-origin player iframe:
+     top frame has no <video>; detection must come from the subframe scan. -->
+<iframe src="direct.html" width="660" height="420" title="embed"></iframe>
+<p>Expected: direct.html's video is found via the all-frames content script;
+diagnostics note the embed. For a true cross-origin check, serve a second
+directory on another port and point the iframe there.</p>
+</body>
+</html>

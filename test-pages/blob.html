@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Sfetcher test: blob video</title>
+</head>
+<body>
+<h1>Blob-backed video (no manifest)</h1>
+<video id="v" controls width="640"></video>
+<script>
+  // Fetches an authorized local file and plays it through a blob URL.
+  fetch('sample.mp4')
+    .then((r) => r.blob())
+    .then((b) => { document.getElementById('v').src = URL.createObjectURL(b); })
+    .catch((e) => { document.body.insertAdjacentHTML('beforeend', '<p>need sample.mp4: ' + e + '</p>'); });
+</script>
+<p>Expected: no downloadable item (honest). Popup reports "1 player element
+active … opaque (blob) streams". Diagnostics show blob-source-skipped.</p>
+</body>
+</html>

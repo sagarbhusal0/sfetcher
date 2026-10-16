@@ -1,0 +1,668 @@
+# MASTER PROMPT: Build a Complete Free Video DownloadHelper Alternative
+
+You are an autonomous senior software engineer specializing in Chromium extensions, TypeScript, browser networking, HLS/DASH streaming, and media processing. Your task is to **build a complete, working, free alternative to Video DownloadHelper**, primarily for Brave Browser on Linux.
+
+Do not merely explain how to build it. Do not stop after creating a plan, generating boilerplate, or implementing a visual mockup. Inspect the repository, implement the software, run the available checks, fix errors, and leave the project in a working state.
+
+If the repository already contains code, inspect it and preserve useful existing work. If it is empty, initialize the project yourself. Make reasonable technical decisions without repeatedly asking me for approval.
+
+## 1. Product Requirements
+
+Build a browser extension that detects downloadable media on the current webpage and lets the user inspect, select, and download supported media formats.
+
+The extension must be:
+
+- Completely free to operate.
+- Local-first, without a required backend.
+- Primarily compatible with Brave on Linux.
+- Built with TypeScript, React, WXT, and Tailwind CSS.
+- Based on Chromium Manifest V3.
+- Designed to support HLS and MPEG-DASH VOD streams in addition to ordinary direct media URLs.
+- Free from mandatory subscriptions, accounts, advertisements, analytics, telemetry, and paid APIs.
+- Maintainable, documented, secure, and tested.
+
+Do not copy proprietary source code, branding, logos, or assets from Video DownloadHelper. Create an original product identity and interface.
+
+Use a temporary project name such as **OpenMedia Downloader** unless the repository already has a suitable name.
+
+## 2. Technology and Dependencies
+
+Use the following stack:
+
+- TypeScript with strict mode enabled.
+- WXT for browser-extension development and manifest generation.
+- React for the user interface.
+- Tailwind CSS for styling.
+- Lucide React for icons.
+- Vitest for unit tests.
+- ESLint and Prettier for code quality.
+- Zod or an equivalent lightweight schema validator for untrusted messages and configuration.
+- IndexedDB for persistent media metadata when appropriate.
+- The browser Downloads API for ordinary direct downloads.
+- A maintained HLS or DASH parsing library only when it provides a clear advantage over a focused implementation.
+- An appropriate, locally bundled media-processing solution for supported remuxing operations.
+
+Select stable, mutually compatible dependency versions and verify their APIs. Do not invent library functions or depend on undocumented browser behavior.
+
+Avoid unnecessary dependencies. Do not load executable JavaScript from remote servers. Bundle all required runtime code locally.
+
+## 3. Required Architecture
+
+Create a well-organized project using WXT conventions. The following is the intended logical structure; adapt file locations where WXT requires a different layout.
+
+- `entrypoints/background.ts`: service worker, tab tracking, download orchestration, and message routing.
+- `entrypoints/content.ts`: page media discovery and observation.
+- `entrypoints/popup/`: compact React interface.
+- `entrypoints/manager/`: expanded download manager.
+- `src/detection/`: media classification and detection.
+- `src/manifests/hls/`: HLS playlist parsing.
+- `src/manifests/dash/`: DASH manifest parsing.
+- `src/downloads/`: queue, progress, cancellation, and retry handling.
+- `src/media/`: segment retrieval, format handling, and muxing.
+- `src/storage/`: settings and persistent metadata.
+- `src/messaging/`: typed and validated extension messages.
+- `src/shared/`: shared types, constants, and utility functions.
+- `src/components/`: reusable UI components.
+- `src/hooks/`: React hooks.
+- `tests/`: unit and integration tests.
+- `public/`: static assets and icons.
+
+Include all necessary configuration files, dependencies, source files, tests, and documentation.
+
+Do not create empty placeholder modules for functionality that is required by this specification.
+
+## 4. Media Detection Engine
+
+Implement actual media detection using supported browser APIs and content scripts.
+
+Detect and classify:
+
+- MP4.
+- WebM.
+- MOV and other recognized media containers.
+- MP3, AAC, M4A, OGG, WAV, and other supported audio formats.
+- HLS `.m3u8` playlists.
+- MPEG-DASH `.mpd` manifests.
+- HTML5 video and audio elements.
+- Media URLs observed in network requests.
+- Direct media resources identified by response MIME type.
+- Resources loaded dynamically after the page has initially loaded.
+
+Use multiple signals to reduce false positives:
+
+1. URL path and file extension.
+2. HTTP response `Content-Type` when available.
+3. Resource type and network request metadata.
+4. HTML media element properties.
+5. Manifest contents and known streaming patterns.
+
+Do not classify every binary request as a media resource.
+
+Support dynamically created media elements by observing relevant DOM changes. Deduplicate detections and update metadata when additional information becomes available.
+
+Use supported Manifest V3 network observation capabilities. Do not rely on blocking web requests or deprecated Manifest V2 APIs. Handle the limitations of observing response bodies and headers explicitly.
+
+Where network observation cannot reliably identify a resource, use content-script discovery or offer a clear explanation.
+
+### Media metadata
+
+Collect and display, when available:
+
+- Media type.
+- Container and codec.
+- Resolution.
+- Duration.
+- Source hostname.
+- Approximate bitrate.
+- Approximate file size.
+- Audio language and track information.
+- Subtitle and caption tracks.
+- Detection time.
+- Download status.
+
+Never fabricate unavailable metadata. Distinguish between known, estimated, and unavailable values.
+
+### Blob URLs
+
+Handle `blob:` URLs as special cases. Investigate whether the underlying media can be identified through supported page-level observations or accessible manifests.
+
+Do not assume a blob URL is directly downloadable through the background worker. If it cannot be safely accessed, explain the limitation in the UI.
+
+Do not inject code to bypass browser security boundaries.
+
+## 5. Direct Media Downloads
+
+Implement fully functional direct downloading for accessible media URLs.
+
+Use the browser Downloads API for normal direct resources whenever possible.
+
+Required functionality:
+
+- Start and cancel downloads.
+- Show download progress.
+- Show completed, failed, interrupted, and cancelled states.
+- Display the destination filename.
+- Allow filename editing before downloading.
+- Sanitize filenames and remove unsafe path components.
+- Handle duplicate filenames.
+- Configure the default download subfolder.
+- Retry recoverable failures.
+- Track active downloads.
+- Provide clear error messages.
+- Reconcile persisted metadata with actual browser download state after a service-worker restart.
+
+Support configurable concurrency for downloads managed by the extension itself.
+
+Use browser-native download management for direct files where possible instead of reimplementing HTTP downloading unnecessarily.
+
+Do not claim resumability unless the browser or implemented transport genuinely supports it.
+
+For URLs that require temporary request context, handle failures clearly. Do not extract, store, log, or transmit passwords, authorization tokens, or cookies. Do not silently reuse credentials from unrelated origins.
+
+Do not promise that downloads will work on every website. Display actionable errors for expired URLs, unavailable permissions, authentication restrictions, HTTP failures, and unsupported resources.
+
+## 6. HLS Implementation
+
+Implement HLS parsing and processing for authorized media streams.
+
+Support:
+
+- Master playlists.
+- Media playlists.
+- Relative and absolute segment URLs.
+- Resolution and bandwidth variants.
+- Codec metadata.
+- Audio groups and alternate audio tracks.
+- Subtitle tracks where available.
+- Initialization segments.
+- Fragmented MP4 segments.
+- MPEG-TS segments.
+- Media sequence numbers.
+- Discontinuities.
+- End-of-list markers.
+- VOD playlist detection.
+- Progress reporting.
+- Cancellation.
+- Recoverable retries.
+
+Parse the playlist correctly instead of relying on fragile string matching.
+
+Resolve relative URLs against the playlist's actual URL. Validate URL schemes and reject unsafe destinations.
+
+For VOD playlists, provide an end-to-end pipeline:
+
+1. Fetch the manifest.
+2. Parse variants and available tracks.
+3. Let the user select a representation and available audio or subtitle tracks.
+4. Resolve the selected media playlist.
+5. Retrieve the initialization segment when needed.
+6. Retrieve segments in the correct order.
+7. Preserve the metadata necessary for valid output.
+8. Remux or package the segments into a supported playable output.
+9. Report progress and clean up temporary data.
+
+Do not simply concatenate arbitrary MPEG-TS or fragmented MP4 segments and rename the resulting file to `.mp4`.
+
+Use a compatible remuxing strategy and verify output with suitable tests.
+
+Support live streams only if a practical and tested recording implementation is possible. Otherwise, explicitly mark live-stream recording as unsupported in the initial release.
+
+Do not implement DRM circumvention, encrypted-stream key extraction, or access-control bypasses.
+
+## 7. MPEG-DASH Implementation
+
+Implement parsing of static DASH MPD manifests for authorized VOD streams.
+
+Support:
+
+- MPD parsing.
+- Static presentation detection.
+- Adaptation sets.
+- Representations.
+- Video and audio tracks.
+- Bandwidth and resolution selection.
+- Codec metadata.
+- `BaseURL` resolution.
+- `SegmentTemplate`.
+- `SegmentTimeline`.
+- `SegmentList`.
+- Initialization segments.
+- Relative segment paths.
+- Progress reporting.
+- Cancellation.
+- Recoverable retries.
+
+Respect the correct URL resolution and segment ordering rules.
+
+Handle common `$RepresentationID$`, `$Bandwidth$`, `$Number$`, and `$Time$` template substitutions where applicable. Implement escaped dollar signs and timeline repetition rules correctly.
+
+Do not assume every MPD uses the same segment layout.
+
+For separate audio and video representations:
+
+1. Allow the user to choose compatible tracks.
+2. Download the required initialization and media segments.
+3. Process the streams using a supported local remuxing implementation.
+4. Produce a playable output when the selected codecs and container combination are supported.
+5. Report unsupported codec or manifest combinations accurately.
+
+Implement explicit detection for unsupported features rather than silently generating corrupt files.
+
+Dynamic live MPDs may be deferred if they are outside the reliable scope of the first release. Clearly document the limitation.
+
+## 8. Media Processing and FFmpeg
+
+Investigate a locally bundled FFmpeg WebAssembly implementation or another suitable local remuxing library.
+
+Evaluate the selected implementation for:
+
+- Browser compatibility.
+- Supported input containers.
+- Supported output containers.
+- Audio/video stream mapping.
+- Codec compatibility.
+- Memory consumption.
+- Large-file limitations.
+- Worker support.
+- Distribution size.
+- License compatibility.
+
+If FFmpeg WebAssembly is selected, bundle the required runtime files locally and verify the worker and asset-loading paths in the built extension.
+
+Never download an executable, codec binary, or JavaScript runtime from an external server at execution time.
+
+Use separate processing workers when supported to prevent expensive media operations from freezing the popup or manager.
+
+Do not load entire large videos into JavaScript memory unnecessarily. Implement bounded concurrency, chunk processing where practical, and explicit storage or memory limits.
+
+If a selected format cannot be remuxed without transcoding, do not silently attempt an unsupported operation. Explain the issue and either select another compatible output or report the limitation.
+
+Prefer stream copying and remuxing over transcoding whenever possible to minimize CPU usage and preserve quality.
+
+The initial release must have a clear list of supported input/output combinations.
+
+## 9. Quality Selection
+
+Provide a clear quality-selection interface.
+
+For adaptive streams, show available representations with:
+
+- Resolution.
+- Bandwidth.
+- Codec.
+- Estimated size when reasonably calculable.
+- Audio track availability.
+- Subtitle track availability.
+
+For direct media files, show only quality options actually available from the source.
+
+Do not invent 1080p, 720p, or 480p variants.
+
+Do not claim that changing a filename or extension changes video quality or format.
+
+For separate audio and video representations, select compatible combinations and warn when the output combination is unsupported.
+
+Allow the user to select the highest available quality, a specific resolution, or a lower-bandwidth representation when available.
+
+## 10. Download Queue
+
+Build a proper queue-management system.
+
+Support:
+
+- Pending downloads.
+- Active downloads.
+- Completed downloads.
+- Failed downloads.
+- Cancelled downloads.
+- Pause or resume where supported.
+- Retry.
+- Remove from queue.
+- Clear completed items.
+- Configurable concurrency.
+- Progress aggregation.
+- Persistent queue metadata.
+
+Prevent duplicate work when the same resource is detected multiple times.
+
+Distinguish between a detected media resource, a browser-native download, and a multi-segment streaming download.
+
+Use a state machine with valid transitions. Prevent invalid transitions, such as reporting a failed download as completed without verification.
+
+Ensure queue metadata remains consistent after the background service worker is suspended or restarted.
+
+## 11. User Interface
+
+Create an original, polished interface inspired by professional desktop download managers.
+
+Use React, TypeScript, and Tailwind CSS.
+
+Provide a dark-first theme with optional light mode.
+
+### Browser popup
+
+Build a compact popup containing:
+
+- Product name and icon.
+- Active tab information.
+- Media detection count.
+- Search input.
+- Format filters.
+- Sort controls.
+- Detected media list.
+- Resolution and format badges.
+- Download button.
+- Quality selection when available.
+- Download progress.
+- Empty states.
+- Permission warnings.
+- Unsupported-stream warnings.
+- A link to the expanded manager.
+
+Each media item must provide enough information to identify the resource without overwhelming the user.
+
+### Expanded manager
+
+Create a full-page management interface with:
+
+- Active downloads.
+- Download history.
+- Search and filters.
+- Sorting.
+- Queue management.
+- Retry and cancellation.
+- Filename configuration.
+- Download destination settings.
+- Theme selection.
+- Permission and privacy information.
+- Supported-format documentation.
+
+### UI quality requirements
+
+Use responsive layouts, accessible controls, keyboard navigation, visible focus indicators, meaningful tooltips, and proper contrast.
+
+Avoid fake controls, nonfunctional buttons, placeholder download progress, and hardcoded sample media in production builds.
+
+Use loading indicators only while work is actually in progress.
+
+All visible actions must invoke working functionality.
+
+## 12. Permissions and Security
+
+Request only the permissions required for implemented features.
+
+Evaluate and document the need for permissions such as:
+
+- `storage`
+- `downloads`
+- `activeTab`
+- `scripting`
+- `webRequest`
+- `notifications`, if notifications are implemented
+
+Request host access when necessary and explain why it is required. Prefer optional host permissions when they are practical for the selected architecture.
+
+Do not request unrestricted access to every website without justification.
+
+Validate all inter-context messages with schemas.
+
+Treat page-provided URLs, manifests, filenames, headers, and media metadata as untrusted input.
+
+Protect against:
+
+- Malformed manifests.
+- Oversized manifests.
+- Excessive segment counts.
+- Unsafe URL schemes.
+- Unexpected redirects.
+- Path traversal in filenames.
+- Malicious filenames.
+- Invalid message payloads.
+- Resource exhaustion.
+- Unbounded network concurrency.
+- Unsafe local file access.
+- Accidental credential exposure.
+
+Do not use `eval`, remote executable code, or dynamically downloaded code.
+
+Do not implement DRM circumvention, paywall bypasses, authentication bypasses, or methods designed to defeat access controls.
+
+Only process content the user is authorized to access and download.
+
+Provide a privacy page or section explaining that media metadata and settings remain local.
+
+## 13. Storage and Settings
+
+Persist necessary metadata and settings locally.
+
+Store:
+
+- User preferences.
+- Theme.
+- Default download folder.
+- Queue metadata.
+- Relevant media metadata.
+- Download history, if enabled.
+- User-configurable limits.
+
+Do not store sensitive authentication material.
+
+Use IndexedDB where its capacity and transaction behavior make it appropriate. Use extension storage for lightweight preferences.
+
+Add controls to clear the media history and delete stored metadata.
+
+Handle browser storage quota errors and corrupted records gracefully.
+
+Never store full media files in extension storage.
+
+## 14. Automated Testing
+
+Write actual tests for the core logic.
+
+Include tests for:
+
+### Detection
+- Direct MP4 URL detection.
+- WebM and audio URL detection.
+- MIME-type classification.
+- URL normalization.
+- False-positive filtering.
+- Duplicate detection.
+- Blob URL handling.
+
+### HLS
+- Master playlists.
+- Media playlists.
+- Variant parsing.
+- Relative URLs.
+- Audio groups.
+- Subtitle tracks.
+- Initialization segments.
+- Discontinuities.
+- Malformed manifests.
+- Unsupported encryption indicators.
+
+### DASH
+- MPD parsing.
+- Adaptation sets.
+- Representation selection.
+- `BaseURL` resolution.
+- SegmentTemplate substitution.
+- SegmentTimeline.
+- SegmentList.
+- Initialization segments.
+- Malformed XML.
+- Unsupported manifest structures.
+
+### Download management
+- Queue ordering.
+- Concurrency limits.
+- Progress updates.
+- Cancellation.
+- Retry behavior.
+- Filename sanitization.
+- Invalid state transitions.
+- Service-worker restart recovery.
+- Storage failures.
+
+### Security
+- Malicious URLs.
+- Unsafe URL schemes.
+- Invalid messages.
+- Oversized manifests.
+- Path traversal.
+- Excessive segment counts.
+
+Mock network requests and use local fixtures. Tests must not depend on public websites remaining unchanged.
+
+Include at least one integration test for the complete supported HLS VOD processing pipeline and one for DASH VOD processing. Use synthetic or permissively licensed test fixtures.
+
+Where the browser environment prevents automated end-to-end tests, provide a reproducible manual test procedure and clearly identify what was not tested.
+
+## 15. Build and Tooling
+
+Configure the project with:
+
+- `package.json`
+- WXT configuration.
+- TypeScript configuration.
+- Tailwind CSS configuration appropriate to the installed version.
+- ESLint configuration.
+- Prettier configuration.
+- Vitest configuration.
+- `.gitignore`
+- `README.md`
+- `LICENSE`
+- Required extension icons and static assets.
+
+Add working scripts such as:
+
+- `npm run dev`
+- `npm run build`
+- `npm run build:firefox`, if Firefox is supported.
+- `npm run typecheck`
+- `npm run lint`
+- `npm run test`
+- `npm run zip`
+
+Use the actual package manager and script names selected for the project, and document them consistently.
+
+Do not create scripts that merely print success without performing the advertised operation.
+
+Ensure the Chromium build is loadable in Brave using the generated unpacked extension directory.
+
+## 16. Brave on Linux Installation
+
+Write complete setup instructions for Linux users.
+
+Document:
+
+1. The required Node.js version.
+2. Dependency installation.
+3. Development mode.
+4. Production build.
+5. Running tests.
+6. Opening Brave's extension management page.
+7. Enabling developer mode.
+8. Loading the generated unpacked extension directory.
+9. Granting access to the current website.
+10. Testing a direct video URL.
+11. Testing an HLS VOD playlist.
+12. Testing a DASH VOD manifest.
+13. Finding logs and diagnosing errors.
+14. Troubleshooting missing media detections, blocked requests, unsupported formats, and memory limits.
+
+Use the actual generated build path in the README rather than guessing it.
+
+## 17. Implementation Workflow
+
+Execute the following workflow autonomously.
+
+### Step 1: Inspect
+Inspect the current working directory, repository structure, existing source files, package manager, and development environment.
+
+### Step 2: Plan
+Create a concise `IMPLEMENTATION_PLAN.md` describing the architecture, implementation order, major risks, and validation strategy.
+
+Do not stop after producing the plan.
+
+### Step 3: Initialize
+Set up the WXT project and install compatible dependencies.
+
+### Step 4: Implement the working foundation
+Build the extension shell, background service worker, content-script detection, typed messaging, React popup, and direct downloads.
+
+Build and test this foundation before proceeding.
+
+### Step 5: Implement HLS
+Add playlist parsing, variant discovery, segment retrieval, supported output processing, and tests.
+
+### Step 6: Implement DASH
+Add MPD parsing, representation selection, segment retrieval, supported output processing, and tests.
+
+### Step 7: Implement the manager
+Add the expanded UI, queue, progress, history, settings, and error handling.
+
+### Step 8: Harden the implementation
+Review permissions, security, resource limits, failure recovery, service-worker lifecycle behavior, and storage consistency.
+
+### Step 9: Validate
+Run the actual project commands for:
+
+- Dependency integrity.
+- TypeScript type checking.
+- Linting.
+- Unit tests.
+- Integration tests.
+- Production build.
+- Extension packaging.
+
+Fix errors and rerun failed checks.
+
+Do not disable strict TypeScript checks, suppress errors indiscriminately, or remove tests to achieve a passing build.
+
+### Step 10: Report
+At completion, provide a concise but complete report containing:
+
+- Features implemented.
+- Project directory.
+- Exact generated build directory.
+- Exact archive path, if packaging succeeds.
+- Installation instructions.
+- Test commands and actual results.
+- Features verified manually.
+- Features that remain incomplete.
+- Known browser and media-format limitations.
+
+If a dependency, environment restriction, or technical limitation prevents a feature from being implemented, document it honestly and finish the rest of the project.
+
+## 18. Definition of Done
+
+The project is not complete merely because it compiles.
+
+It is complete when:
+
+1. Brave can load the built extension.
+2. Real direct media resources can be detected and downloaded.
+3. The UI displays actual detection and download state.
+4. HLS VOD manifests can be parsed and supported streams can be processed into valid output.
+5. DASH VOD manifests can be parsed and supported streams can be processed into valid output.
+6. Available quality variants can be selected.
+7. Separate audio and video streams can be muxed when the selected formats are supported.
+8. Queue state, cancellation, progress, and error handling work.
+9. Core automated tests pass.
+10. The README contains accurate installation and troubleshooting instructions.
+11. The extension does not depend on paid services or a remote backend.
+12. Any unimplemented features and unsupported media types are explicitly documented.
+
+**Begin now. Inspect the repository, create the implementation plan, and then implement the complete project. Do not respond with another tutorial, another plan-only answer, or a list of code snippets. Work directly in the repository, validate the result, and report the real outcome.**
+
+## Project Identity and Naming — Sfetcher
+
+The official project name is **Sfetcher**. This name is final and must be used consistently throughout the entire project. Do not use placeholder names such as OpenMedia Downloader or Video DownloadHelper as the product name.
+
+### Naming conventions
+
+- **Project name:** Sfetcher
+- **Extension display name:** Sfetcher — Media Downloader
+- **Package name:** `sf etcher` — use the valid, lowercase, hyphen-free package identifier `sf etcher`? No spaces are permitted; use `sf etcher` as `sf etcher` only if the package manager supports it. Prefer `sf etcher`? 
