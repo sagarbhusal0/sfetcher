@@ -24,6 +24,7 @@ interface AudioRenditionInfo {
 
 function MediaRow({
   item,
+  pageUrl,
   busy,
   onDownloadDirect,
   onStreamStarted,
@@ -32,6 +33,7 @@ function MediaRow({
   clearBusy,
 }: {
   item: DetectedMedia;
+  pageUrl: string | null;
   busy: boolean;
   onDownloadDirect: () => void;
   onStreamStarted: (msg: string) => void;
@@ -86,7 +88,7 @@ function MediaRow({
     try {
       const res = await chrome.runtime.sendMessage({
         type: 'LIST_VARIANTS',
-        payload: { manifestUrl: item.url, kind: item.kind },
+        payload: { manifestUrl: item.url, kind: item.kind, referrer: pageUrl },
       });
       if (!res?.ok) throw new Error(res?.error ?? 'Could not read stream variants');
       if (res.live) {
@@ -117,6 +119,7 @@ function MediaRow({
           kind: item.kind,
           variantId: selected,
           audioId: selectedAudio,
+          referrer: pageUrl,
           filename: fallback,
         },
       });
@@ -237,6 +240,7 @@ export default function App() {
   const [notice, setNotice] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [diag, setDiag] = useState<DiagSummary | null>(null);
+  const [pageUrl, setPageUrl] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -248,6 +252,9 @@ export default function App() {
           setNotice('No active tab.');
           return;
         }
+        // Only http(s) page URLs are forwarded as fetch referrers; the
+        // message schema rejects anything else.
+        setPageUrl(tab.url && /^https?:\/\//i.test(tab.url) ? tab.url : null);
         const res = await chrome.runtime.sendMessage({
           type: 'GET_TAB_MEDIA',
           payload: { tabId: tab.id },
@@ -417,6 +424,7 @@ export default function App() {
             <MediaRow
               key={m.id}
               item={m}
+              pageUrl={pageUrl}
               busy={busyId === m.id}
               onDownloadDirect={() => void download(m)}
               onStreamStarted={(msg) => setNotice(msg)}

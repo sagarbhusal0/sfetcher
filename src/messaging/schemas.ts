@@ -93,6 +93,7 @@ export const messageSchema = z.discriminatedUnion('type', [
     payload: z.object({
       manifestUrl: z.string().url().max(8192),
       kind: z.enum(['hls', 'dash']),
+      referrer: z.string().url().max(8192).nullish(),
     }),
   }),
   z.object({
@@ -103,6 +104,7 @@ export const messageSchema = z.discriminatedUnion('type', [
       kind: z.enum(['hls', 'dash']),
       variantId: z.string().min(1).max(64),
       audioId: z.string().min(1).max(256).nullish(),
+      referrer: z.string().url().max(8192).nullish(),
       filename: z.string().min(1).max(255),
     }),
   }),
@@ -121,6 +123,7 @@ export const messageSchema = z.discriminatedUnion('type', [
       kind: z.enum(['hls', 'dash']),
       variantId: z.string().min(1).max(64),
       audioId: z.string().min(1).max(256).nullish(),
+      referrer: z.string().url().max(8192).nullish(),
     }),
   }),
   z.object({

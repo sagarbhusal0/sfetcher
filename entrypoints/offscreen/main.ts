@@ -119,6 +119,7 @@ async function decryptTrack(
   body: Uint8Array[],
   keyCache: Map<string, Uint8Array>,
   signal: AbortSignal,
+  referrer?: string,
 ): Promise<Uint8Array[]> {
   if (!segments.some((s) => s.key)) return body;
   return Promise.all(
@@ -127,7 +128,7 @@ async function decryptTrack(
       if (!seg?.key) return data;
       let keyBytes = keyCache.get(seg.key.uri);
       if (!keyBytes) {
-        const raw = await fetchBytes(seg.key.uri, { signal, resourceType: 'key' });
+        const raw = await fetchBytes(seg.key.uri, { signal, resourceType: 'key', referrer });
         keyBytes = coerceKeyBytes(raw, sanitizeUrlForError(seg.key.uri));
         keyCache.set(seg.key.uri, keyBytes);
       }
@@ -141,8 +142,10 @@ async function runHls(
   manifestUrl: string,
   variantId: string,
   audioId?: string | null,
+  referrer?: string | null,
 ): Promise<void> {
   const prefs = await loadPrefs();
+  const ref = referrer ?? undefined;
   const ac = new AbortController();
   aborters.set(item.id, ac);
   try {
@@ -153,6 +156,7 @@ async function runHls(
         signal: ac.signal,
         maxBytes: prefs.maxManifestBytes,
         resourceType: 'master',
+        referrer: ref,
       }),
     );
     let playlistUrl = manifestUrl;
@@ -172,6 +176,7 @@ async function runHls(
         signal: ac.signal,
         maxBytes: prefs.maxManifestBytes,
         resourceType: 'variant',
+        referrer: ref,
       }),
     );
     const media = parseMediaPlaylist(mediaText, playlistUrl, { maxSegments: prefs.maxSegments });
@@ -186,6 +191,7 @@ async function runHls(
           signal: ac.signal,
           maxBytes: prefs.maxManifestBytes,
           resourceType: 'audio',
+          referrer: ref,
         }),
       );
       audio = parseMediaPlaylist(audioText, audioPlaylistUrl, { maxSegments: prefs.maxSegments });
@@ -214,6 +220,7 @@ async function runHls(
         const fetched = await fetchSegmentsOrdered(all, {
           concurrency: prefs.concurrency,
           signal: ac.signal,
+          referrer: ref,
           onProgress: (done, total) => void setProgress(item, baseProgress + (done / total) * span),
           // Write-through to the disk bucket (init sections excluded:
           // small and re-fetchable, not worth bucket slots).
@@ -232,7 +239,7 @@ async function runHls(
     const keyCache = new Map<string, Uint8Array>();
     const { parts, hasInit } = await fetchTrackParts(media.segments, 'video', 0, fetchSpan);
     let body = hasInit ? parts.slice(1) : parts;
-    body = await decryptTrack(media.segments, body, keyCache, ac.signal);
+    body = await decryptTrack(media.segments, body, keyCache, ac.signal, ref);
     const first = body[0];
     if (!first) throw new Error('No segment data received');
     const videoContainer = sniffContainer(first);
@@ -243,7 +250,7 @@ async function runHls(
     if (audio) {
       const fetched = await fetchTrackParts(audio.segments, 'audio', fetchSpan, 0.3);
       const rawAudioBody = fetched.hasInit ? fetched.parts.slice(1) : fetched.parts;
-      audioBody = await decryptTrack(audio.segments, rawAudioBody, keyCache, ac.signal);
+      audioBody = await decryptTrack(audio.segments, rawAudioBody, keyCache, ac.signal, ref);
       audioHasInit = fetched.hasInit;
       const audioFirst = audioBody[0];
       if (!audioFirst) throw new Error('No audio segment data received');
@@ -322,15 +329,25 @@ async function runHls(
   }
 }
 
-async function runDash(item: QueueItem, manifestUrl: string, variantId: string): Promise<void> {
+async function runDash(
+  item: QueueItem,
+  manifestUrl: string,
+  variantId: string,
+  referrer?: string | null,
+): Promise<void> {
   const prefs = await loadPrefs();
+  const ref = referrer ?? undefined;
   const ac = new AbortController();
   aborters.set(item.id, ac);
   try {
     await putQueue(transition(item, 'active'));
     const td = new TextDecoder();
     const mpdText = td.decode(
-      await fetchBytes(manifestUrl, { signal: ac.signal, maxBytes: prefs.maxManifestBytes }),
+      await fetchBytes(manifestUrl, {
+        signal: ac.signal,
+        maxBytes: prefs.maxManifestBytes,
+        referrer: ref,
+      }),
     );
     const job = planDashJob(mpdText, manifestUrl, variantId, prefs.maxSegments);
     const tracks: RemuxInput[] = [];
@@ -348,6 +365,7 @@ async function runDash(item: QueueItem, manifestUrl: string, variantId: string):
       const parts = await fetchSegmentsOrdered(all, {
         concurrency: prefs.concurrency,
         signal: ac.signal,
+        referrer: ref,
         onProgress: (done, total) => void setProgress(item, (done / total) * 0.35),
         onFragment: (idx, data) => {
           const bodyIdx = init ? idx - 1 : idx;
@@ -428,12 +446,13 @@ chrome.runtime.onMessage.addListener((raw, _sender, sendResponse) => {
   if (msg.type === 'OFFSCREEN_EXEC') {
     const { queueId, manifestUrl, kind, variantId } = msg.payload;
     const audioId = msg.payload.audioId ?? null;
+    const referrer = msg.payload.referrer ?? null;
     void (async () => {
       const items = await allQueue().catch(() => [] as QueueItem[]);
       const item = items.find((q) => q.id === queueId);
       if (!item) return;
-      if (kind === 'hls') await runHls(item, manifestUrl, variantId, audioId);
-      else await runDash(item, manifestUrl, variantId);
+      if (kind === 'hls') await runHls(item, manifestUrl, variantId, audioId, referrer);
+      else await runDash(item, manifestUrl, variantId, referrer);
     })();
     sendResponse({ ok: true });
     return false;

@@ -304,8 +304,7 @@ describe('sanitizeUrlForError', () => {
   });
 });
 
-describe('fetchSegmentsOrdered with ranges', () => {
-  it('fetches mixed plain and ranged items, preserving order', async () => {
+describe('fetchSegmentsOrdered with ranges', () => {  it('fetches mixed plain and ranged items, preserving order', async () => {
     const full = bytes(100);
     const seen: Array<string | null> = [];
     mockFetch((url, init) => {
@@ -332,5 +331,67 @@ describe('fetchSegmentsOrdered with ranges', () => {
     expect(seen).toContain('bytes=0-9');
     expect(seen).toContain(null);
     expect(seen).toContain('bytes=50-54');
+  });
+});
+
+describe('request context (cookies and referrer)', () => {
+  it('sends same-origin credentials and the tab referrer', async () => {
+    const seen: RequestInit[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_input: unknown, init?: RequestInit) => {
+        seen.push(init ?? {});
+        return new Response(new Uint8Array([1, 2]).buffer as ArrayBuffer, { status: 200 });
+      }),
+    );
+    try {
+      await fetchBytes(`${BASE}seg.ts`, {
+        attempts: 1,
+        referrer: 'https://watch.example.com/title',
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(seen[0]?.credentials).toBe('include');
+    expect(seen[0]?.referrer).toBe('https://watch.example.com/title');
+  });
+
+  it('omits the referrer field when none is provided', async () => {
+    const seen: RequestInit[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_input: unknown, init?: RequestInit) => {
+        seen.push(init ?? {});
+        return new Response(new Uint8Array([1]).buffer as ArrayBuffer, { status: 200 });
+      }),
+    );
+    try {
+      await fetchBytes(`${BASE}seg.ts`, { attempts: 1 });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(seen[0]?.credentials).toBe('include');
+    expect(seen[0]?.referrer).toBeUndefined();
+  });
+
+  it('passes the referrer through ordered segment fetches', async () => {
+    const seen: Array<RequestInit | undefined> = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_input: unknown, init?: RequestInit) => {
+        seen.push(init);
+        return new Response(new Uint8Array([7]).buffer as ArrayBuffer, { status: 200 });
+      }),
+    );
+    try {
+      await fetchSegmentsOrdered([`${BASE}a.ts`, `${BASE}b.ts`], {
+        attempts: 1,
+        referrer: 'https://watch.example.com/title',
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(seen).toHaveLength(2);
+    for (const init of seen) expect(init?.referrer).toBe('https://watch.example.com/title');
   });
 });

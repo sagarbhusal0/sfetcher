@@ -121,6 +121,13 @@ export interface FetchOptions {
   /** Base backoff delay in ms; actual delay is base * 2^(retry-1). Default 250. */
   retryBaseDelayMs?: number;
   resourceType?: ResourceType;
+  /**
+   * Page URL that initiated the download (the tab the media plays in).
+   * Sent as the request referrer so servers with hotlink protection see
+   * the same context as the page's own player. Never a credential: only
+   * the URL the user is already visiting.
+   */
+  referrer?: string;
 }
 
 function throwIfAborted(signal?: AbortSignal): void {
@@ -196,7 +203,13 @@ async function fetchOnce(url: string, opts: FetchOptions, resourceType: Resource
   }
   let res: Response;
   try {
-    res = await fetch(url, { signal: opts.signal, credentials: 'omit', headers });
+    // credentials:include sends only the user's own cookies for the target
+    // origin (standard browser semantics, e.g. a site session cookie) —
+    // the same context the page player already has. No cross-origin leak:
+    // cookies never go anywhere but their own origin.
+    const init: RequestInit = { signal: opts.signal, credentials: 'include', headers };
+    if (opts.referrer) init.referrer = opts.referrer;
+    res = await fetch(url, init);
   } catch (e) {
     throwIfAborted(opts.signal);
     throw e;
@@ -285,6 +298,7 @@ export async function fetchSegmentsOrdered(
     attempts?: number;
     retryBaseDelayMs?: number;
     resourceType?: ResourceType;
+    referrer?: string;
     /** Write-through hook (e.g. disk bucket); failures propagate and fail the job. */
     onFragment?: (index: number, data: Uint8Array) => void | Promise<void>;
   } = {},
@@ -306,6 +320,7 @@ export async function fetchSegmentsOrdered(
         signal: opts.signal,
         byteRange: item.byteRange,
         resourceType: item.resourceType ?? opts.resourceType ?? 'segment',
+        referrer: opts.referrer,
         attempts: opts.attempts,
         retryBaseDelayMs: opts.retryBaseDelayMs,
       });

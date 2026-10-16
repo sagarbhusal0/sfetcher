@@ -288,6 +288,7 @@ export default defineBackground(() => {
                 kind: item.job.kind,
                 variantId: item.job.variantId,
                 audioId: item.job.audioId ?? null,
+                referrer: item.job.referrer ?? null,
               },
             });
           } else {
@@ -309,7 +310,11 @@ export default defineBackground(() => {
           // and is initialized lazily on actual download.
           const prefs = await loadPrefs();
           const listing = await listVariants(msg.payload.manifestUrl, msg.payload.kind, (url) =>
-            fetchBytes(url, { maxBytes: prefs.maxManifestBytes, resourceType: 'master' }).then((b) =>
+            fetchBytes(url, {
+              maxBytes: prefs.maxManifestBytes,
+              resourceType: 'master',
+              referrer: msg.payload.referrer ?? undefined,
+            }).then((b) =>
               new TextDecoder().decode(b),
             ),
           );
@@ -338,6 +343,7 @@ export default defineBackground(() => {
             kind: msg.payload.kind,
             variantId: msg.payload.variantId,
             audioId: msg.payload.audioId ?? null,
+            referrer: msg.payload.referrer ?? null,
           } as const;
           const item = createQueueItem({
             mediaId: msg.payload.mediaId,
@@ -369,6 +375,7 @@ export default defineBackground(() => {
               kind: job.kind,
               variantId: job.variantId,
               audioId: job.audioId,
+              referrer: job.referrer,
             },
           });
           sendResponse({ ok: true, queueId: item.id });

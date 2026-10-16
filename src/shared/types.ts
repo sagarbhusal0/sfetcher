@@ -41,6 +41,8 @@ export interface StreamJobSpec {
   variantId: string;
   /** Selected separate audio rendition (`groupId::name`); null = in-band/default. */
   audioId: string | null;
+  /** Initiating tab page URL, sent as fetch referrer for hotlink protection. */
+  referrer: string | null;
 }
 
 export interface QueueItem {

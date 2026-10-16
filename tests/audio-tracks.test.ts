@@ -256,4 +256,33 @@ describe('audio selection messaging', () => {
       })?.type,
     ).toBe('OFFSCREEN_EXEC');
   });
+
+  it('accepts an initiating-page referrer and rejects non-URLs', () => {
+    const page = 'https://watch.example.com/title/1';
+    expect(
+      parseMessage({
+        type: 'LIST_VARIANTS',
+        payload: { manifestUrl: `${BASE}master.m3u8`, kind: 'hls', referrer: page },
+      })?.type,
+    ).toBe('LIST_VARIANTS');
+    expect(
+      parseMessage({
+        type: 'START_STREAM_DOWNLOAD',
+        payload: {
+          mediaId: 'm1',
+          manifestUrl: `${BASE}master.m3u8`,
+          kind: 'hls',
+          variantId: '1',
+          referrer: page,
+          filename: 'out',
+        },
+      })?.type,
+    ).toBe('START_STREAM_DOWNLOAD');
+    expect(
+      parseMessage({
+        type: 'LIST_VARIANTS',
+        payload: { manifestUrl: `${BASE}master.m3u8`, kind: 'hls', referrer: 'not a url' },
+      }),
+    ).toBeNull();
+  });
 });
