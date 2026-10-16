@@ -1,77 +1,113 @@
-# Sfetcher — Media Downloader (v0.2.0, full)
+# Sfetcher — Media Downloader
 
-Free, local-first browser extension (Chromium Manifest V3) that detects downloadable
-media on the current page and downloads it. No accounts, ads, analytics, telemetry,
-or backend. Target: Brave on Linux (also loads in any Chromium).
+Free, local-first Chromium Manifest V3 extension that detects downloadable
+media on the current page and downloads it. No accounts, ads, analytics,
+telemetry, or backend. Primary target: Brave on Linux (loads in any
+Chromium MV3 browser; developed and verified with Chrome).
 
-## Features
+Inspired by Video DownloadHelper. Not affiliated with it.
 
-- Detects MP4/WebM/MOV/audio, HLS `.m3u8`, DASH `.mpd`, HTML5 elements, network MIME hints, dynamic DOM.
-- Direct downloads via Downloads API: progress, cancel/retry, filename edit, sanitize/dedupe, subfolder pref, SW-restart reconcile.
-- HLS VOD end-to-end: variant + quality selection in the popup, ordered segment
-  download with concurrency/cancel/retry, local remux to MP4 via the bundled
-  single-threaded ffmpeg.wasm (stream copy, no transcoding), progress in the Manager.
-- DASH VOD (static) end-to-end: representation selection, video+audio track
-  download, local packaging to MP4. Dynamic/live MPDs are refused with a message.
-- ffmpeg core (`ffmpeg-core.js` + `ffmpeg-core.wasm`) is vendored in `public/ffmpeg/`
-  and loaded from `chrome-extension://` URLs only — no executable, codec, or JS
-  runtime is ever fetched from a remote server at execution time.
-- Processing runs in an offscreen document (MV3 service workers can't host
-  long ffmpeg jobs); the popup/manager never freeze.
-- Live streams, DRM/encrypted streams, and transcoding are explicitly unsupported
-  and reported as such instead of producing corrupt files.
-- Popup (compact) + Manager (queue/history/settings/privacy/formats). Dark-first.
-- Permissions: `storage`, `downloads`, `activeTab`, `scripting`, `webRequest` + optional `<all_urls>`.
+## Supported
+
+- **Direct files**: MP4/WebM/MOV/audio via Downloads API (progress,
+  cancel/retry, SW-restart reconcile). Unaffected by FFmpeg.
+- **HLS VOD**: master/media playlists, multiple resolutions and bitrates,
+  separate audio renditions with language selection, in-band audio,
+  `EXT-X-MAP` init sections, explicit and implicit `EXT-X-BYTERANGE`,
+  relative/absolute/signed URLs (same-origin token propagation),
+  AES-128 identity-key decryption. Live playlists are refused with a message.
+- **DASH (static VOD)**: representation selection, video+audio packaging.
+  Dynamic/live MPDs, multi-period subtleties beyond the first period, and
+  `ContentProtection`/DRM tracks are refused with explicit errors.
+- **Output**: stream-copy remux to MP4 (no transcoding), MP4 container
+  validated with mp4box before success is reported. Separate audio/video
+  packaged with timestamps preserved; TS audio reframed (`aac_adtstoasc`).
+
+## Explicitly unsupported (refused with a message, never corrupt files)
+
+Live recording, DRM (Widevine/FairPlay/SAMPLE-AES/key-service KEYFORMATs),
+transcoding/re-encoding, subtitles download, resumable downloads.
 
 ## Requirements
 
-- Node.js 22+ (tested 24.15.0), npm 11+
-- Brave (Linux) or any Chromium with MV3
+- Node.js 22+, npm 11+
+- Brave (Linux) or Chrome for running the extension
 
 ## Setup
 
 ```bash
 npm install
-npm run dev      # WXT dev mode
-npm run test     # vitest
-npm run typecheck
-npm run lint
-npm run build    # -> .output/chrome-mv3
-npm run zip      # packaged archive
+npm run dev        # WXT dev mode
+npm run test       # vitest unit suite
+npm run typecheck  # tsc --noEmit
+npm run lint       # eslint (see note below)
+npm run build      # -> .output/chrome-mv3
+npm run zip        # versioned release archive
 ```
 
-## Load in Brave (Linux)
+Lint note: `npm run lint` currently reports pre-existing errors confined to
+`test-pages/ff/*.js` (browser/worker globals in fixture files); all shipped
+source is clean.
+
+## Load unpacked
 
 1. `npm run build`
-2. Open `brave://extensions`, enable Developer mode
+2. Open `brave://extensions` (or `chrome://extensions`), enable Developer mode
 3. Load unpacked → `<repo>/.output/chrome-mv3`
-4. Grant host access for the site under test
-5. Popup → play media → Download; Manager via popup link (`manager.html`)
+4. Grant host access for the site under test, reload the page, play the video
+5. Popup → Qualities → pick resolution/audio → Download MP4; Manager shows queue
 
-## Test URLs (use only media you are authorized to download)
+## Permissions (why each)
 
-- Direct: `test-pages/direct.html` (drop any authorized `sample.mp4` next to it, serve with `node serve.cjs` or any static server)
-- HLS VOD: `test-pages/hls.html` (public Mux test stream; video plays via blob MSE — detection must still list the `.m3u8` manifests)
-- DASH VOD: `test-pages/dash.html` (public Big Buck Bunny DASH asset)
-- Blob-only: `test-pages/blob.html` (honest "player active, no downloadable URL" state)
-- Iframe embed: `test-pages/iframe.html` (player in subframe, found via all-frames scan)
-- Embedded third-party players (Anikoto-style): the popup's **Grant site access** button enables network observation; reload the page after granting.
+- `storage` — preferences + queue/media metadata (IndexedDB).
+- `downloads` — saving direct files and finished remuxes.
+- `activeTab`, `scripting` — tab media registry wiring.
+- `webRequest` — non-blocking manifest/MIME observation (no request blocking).
+- `offscreen` — media-processor document (MV3 workers can't host ffmpeg).
+- `optional_host_permissions: <all_urls>` — granted by you per site; without
+  it the extension can't observe that site's streams. Nothing is exfiltrated.
 
-## Logs / troubleshooting
+Extension-page CSP includes `script-src 'self' 'wasm-unsafe-eval'` solely to
+allow the locally bundled FFmpeg WASM. No remote code is ever executed.
 
-- Popup/manager console + `brave://extensions` → service worker DevTools
-- Missing detections: grant host access; blob-only players report a limitation instead of failing silently
-- Blocked request: check optional host permission + site CSP
-- Unsupported format: manager/privacy section lists v1 scope; live/DRM/transcode are refused with a message
+## Privacy
 
-## Limitations (honest)
+All processing is local: detection, fragment download, decryption of
+provider-supplied AES-128 keys, remuxing, and storage stay in the browser
+profile. Diagnostics record hosts and short details only — never full signed
+URLs, tokens, cookies, or headers. No network request leaves the machine
+except the media fetches you explicitly start.
 
-- No live recording, no DRM/encrypted handling, no transcoding (remux/copy only;
-  ffmpeg.wasm is bundled for remuxing, not re-encoding).
-- Stream-segment fetching runs under the page's origin from the offscreen document,
-  so the extension needs host access for the site/CDN (grant it, then reload).
-  Direct downloads use the Downloads API and are unaffected.
-- Job cap: 500 MB output, 2000 segments, 2 MB manifests — larger jobs are refused
-  with a message rather than crashing the worker.
+## Troubleshooting
+
+- **Nothing detected**: grant host access, reload, play the video, reopen the
+  popup. Blob/MSE-only players report a limitation instead of failing silently.
+- **HTTP 401/403**: authorization failed or the signed URL expired — reload the
+  page (fresh tokens) and retry. Not retried automatically, by design.
+- **HTTP 404/410**: content unavailable at that URL.
+- **HTTP 429/5xx**: retried with backoff (bounded); persistent failure means
+  the server keeps failing.
+- **Unsupported encryption/DRM**: the exact method is named; not bypassed.
+- **FFmpeg init failure**: staged error names the phase (`offscreen-*`);
+  fixed by the `offscreen` permission + WASM CSP (both in the manifest).
+- **Quota errors**: free disk space or clear finished jobs, then retry.
+
+## Known limitations
+
+- Large VODs stream fragments to an IndexedDB bucket, but the remux working
+  set still lives in RAM (ffmpeg.wasm exec model); the 500 MB output /
+  2000-segment / 2 MB-manifest caps stay.
+- Variant playlists observed via resource timing can appear as extra rows;
+  each is genuinely downloadable (use its Qualities view).
+- DASH beyond static single-period VOD is experimental.
 - No Firefox build; Chromium-only.
-- Large VODs are held in memory during remux; very large jobs may hit worker memory.
+
+## Test URLs (only media you are authorized to download)
+
+- `test-pages/direct.html`, `hls.html`, `dash.html`, `blob.html`, `iframe.html`
+  (local fixtures + documented public test assets).
+
+## License
+
+MIT — see `LICENSE`. Third-party and upstream adaptations: see
+`THIRD_PARTY_NOTICES.md`. Release history: see `CHANGELOG.md`.

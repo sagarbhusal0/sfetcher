@@ -8,7 +8,7 @@ export default defineConfig({
     name: 'Sfetcher — Media Downloader',
     description:
       'Free, local-first media detector and downloader: direct files, HLS VOD and DASH VOD.',
-    version: '0.2.1',
+    version: '0.3.0',
     permissions: ['storage', 'downloads', 'activeTab', 'scripting', 'webRequest', 'offscreen'],
     content_security_policy: {
       // Single-threaded ffmpeg.wasm core runs from chrome-extension:// URLs.

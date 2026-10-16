@@ -1,6 +1,6 @@
 {
   "name": "sfetcher",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Sfetcher — Media Downloader. Free, local-first browser extension for detecting and downloading web media (direct files, HLS VOD, DASH VOD).",
   "license": "MIT",
   "type": "module",
